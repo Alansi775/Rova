@@ -10,6 +10,8 @@ struct JourneySheet: View {
     @Binding var editing: RootView.EndpointEdit?
     @Binding var showSettings: Bool
     var onPlaceChosen: (RootView.EndpointEdit, Place) -> Void
+    /// Close the card entirely and leave the map alone.
+    var onClose: () -> Void = {}
 
     @State private var now = Date()
     private let clock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -39,6 +41,24 @@ struct JourneySheet: View {
     private var content: some View {
         ScrollView {
             VStack(spacing: RV.Space.l) {
+                // Close it and keep only the map: sometimes you are not going
+                // anywhere, you just want to watch the buses.
+                HStack {
+                    Spacer(minLength: 0)
+                    Button {
+                        Haptic.tap(); onClose()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(RV.Color.inkMuted)
+                            .frame(width: 28, height: 28)
+                            .glassEffect(.regular, in: .circle)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Hide the journey card")
+                }
+                .padding(.bottom, -RV.Space.s)
+
                 if engine.isPlanning && engine.journeys.isEmpty {
                     SkeletonHero()
                 } else if engine.journeys.isEmpty {
@@ -53,7 +73,14 @@ struct JourneySheet: View {
                     }
                 } else if let p = primary {
                     HeroCard(journey: p, now: now, expanded: detent != .height(260))
-                        .onTapGesture { Haptic.tap(); preview = p }
+                        .onTapGesture {
+                            Haptic.tap()
+                            // Opening the stop list also puts the bus on the
+                            // map. "Which stops does it call at" and "where
+                            // is it right now" are the same curiosity.
+                            if let d = p.eta?.vehicleDoorNo { engine.selectVehicle(d) }
+                            preview = p
+                        }
                     if detent != .height(260) {
                         JourneyDetail(journey: p)
                     }
@@ -575,6 +602,8 @@ struct OtherOptions: View {
                         Button {
                             Haptic.select()
                             engine.select(j.option)
+                            // Show the bus itself, not just the route line.
+                            if let d = j.eta?.vehicleDoorNo { engine.selectVehicle(d) }
                             onPick(j)
                         } label: { OptionRow(journey: j) }
                         .buttonStyle(.plain)

@@ -11,6 +11,13 @@ struct RootView: View {
         MKCoordinateRegion(center: .init(latitude: 41.0, longitude: 28.70),
                            span: .init(latitudeDelta: 0.09, longitudeDelta: 0.09)))
     @State private var sheet = true
+    /// Set when the card is closed deliberately, so it is not pulled back.
+    @State private var sheetClosedOnPurpose = false
+    /// Live camera geometry, so the map can follow a bus without resetting
+    /// the zoom the user chose.
+    @State private var currentCentre: CLLocationCoordinate2D?
+    @State private var currentSpan: MKCoordinateSpan?
+    @State private var mapIsBeingDragged = false
     @State private var detent: PresentationDetent =
         ProcessInfo.processInfo.arguments.contains("-ROVAExpanded") ? .large : .height(260)
     @State private var editing: EndpointEdit?
@@ -22,7 +29,11 @@ struct RootView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            JourneyMapView(camera: $camera) { coord in
+            JourneyMapView(camera: $camera,
+                           onCameraChange: { c, span in
+                               currentCentre = c; currentSpan = span
+                           },
+                           onInteractionChange: { mapIsBeingDragged = $0 }) { coord in
                 // A tap while a bus is open just closes it — dropping a pin is
                 // the second tap, never a surprise.
                 if engine.trackedVehicleDoorNo != nil {
@@ -75,11 +86,15 @@ struct RootView: View {
                              else { settings.destination = place }
                              Haptic.success()
                              replan()
+                         },
+                         onClose: {
+                             sheetClosedOnPurpose = true
+                             sheet = false
                          })
                 .environmentObject(engine)
                 .environmentObject(settings)
                 .environmentObject(motion)
-                .presentationDetents([.height(260), .medium, .large], selection: $detent)
+                .presentationDetents([.height(130), .height(260), .medium, .large], selection: $detent)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
                 .presentationDragIndicator(.visible)
                 .presentationCornerRadius(28)
@@ -87,20 +102,48 @@ struct RootView: View {
         }
         // Belt and braces: if the card is ever dismissed by anything at all,
         // it comes straight back. It is the app, not an optional extra.
+        // The card comes back if something dismissed it by accident, but not
+        // when it was closed on purpose: sometimes you only want the map.
         .onChange(of: sheet) { _, shown in
-            if !shown {
+            if !shown && !sheetClosedOnPurpose {
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 350_000_000)
                     sheet = true
                 }
             }
         }
-        .confirmationDialog("Use this location",
-                            isPresented: Binding(get: { pendingPin != nil },
-                                                 set: { if !$0 { pendingPin = nil } })) {
-            Button("Set as destination") { setPin(asOrigin: false) }
-            Button("Set as starting point") { setPin(asOrigin: true) }
-            Button("Cancel", role: .cancel) { pendingPin = nil }
+        // The pin chooser is drawn on the map, not presented.
+        //
+        // It used to be a confirmationDialog on this same view. Presenting it
+        // dismissed the journey sheet, the auto-restore then brought the
+        // sheet back 350 ms later, and the dialog vanished with it — which is
+        // why the two buttons flashed for under a second and the card below
+        // jumped away and returned. Two presentations from one view fight;
+        // this one does not need to be a presentation at all.
+        .overlay(alignment: .center) { pinChooser }
+        // Closing the card must never be a one-way door.
+        .overlay(alignment: .bottom) {
+            if !sheet {
+                Button {
+                    Haptic.tap()
+                    sheetClosedOnPurpose = false
+                    sheet = true
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 11, weight: .bold))
+                        Text(engine.journeys.isEmpty ? "Plan a journey" : "Show journey")
+                            .font(.rvCallout)
+                    }
+                    .foregroundStyle(RV.Color.ink)
+                    .padding(.horizontal, RV.Space.l)
+                    .padding(.vertical, RV.Space.m)
+                    .glassEffect(.regular, in: .capsule)
+                }
+                .buttonStyle(.plain)
+                .padding(.bottom, RV.Space.xl)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
         .task {
             if !ProcessInfo.processInfo.arguments.contains("-ROVAUITest") {
@@ -126,6 +169,7 @@ struct RootView: View {
         .onDisappear { engine.stopLiveUpdates() }
         .task { MetroNetwork.shared.load() }
         .onChange(of: engine.selected?.id) { _, _ in frameJourney() }
+        .onChange(of: motion.displays) { _, _ in followTrackedVehicle() }
         // Tap a bus — in the list below or on the map — and the map goes to
         // it. Selecting a vehicle used to change only which callout was
         // shown, so choosing a bus you could not already see told you
@@ -148,6 +192,7 @@ struct RootView: View {
 
     private var detentHeight: CGFloat {
         switch detent {
+        case .height(130): return 130
         case .height(260): return 260
         default: return 260
         }
@@ -208,18 +253,61 @@ struct RootView: View {
     /// bus" and "where am I getting on" are the same question while waiting.
     /// It is dropped when it is far, rather than zooming out until the bus is
     /// a dot — the point of tapping a bus is to see the bus.
-    private func frameVehicle(_ door: String) {
+    /// Put the chosen bus in the middle of the screen.
+    ///
+    /// It used to frame the bus *and* the boarding stop, which pushed the bus
+    /// off to one side and zoomed out until it was a dot. The point of
+    /// tapping a bus is to look at the bus.
+    private func frameVehicle(_ door: String, animated: Bool = true) {
         guard let d = motion.display(doorNo: door) else { return }
-        var pts = [d.coordinate]
-        if let board = engine.focusedJourney?.option.busLegs.first?.boardStop?.coordinate,
-           Geo.metres(board, d.coordinate) < 2500 {
-            pts.append(board)
+        let span = currentSpan ?? MKCoordinateSpan(latitudeDelta: 0.006, longitudeDelta: 0.006)
+        let r = MKCoordinateRegion(center: d.coordinate, span: span)
+        if animated {
+            withAnimation(.easeInOut(duration: 0.55)) { camera = .region(r) }
+        } else {
+            camera = .region(r)
         }
-        guard var r = region(fitting: pts) else { return }
-        // Never zoom out past a readable street level for a single vehicle.
-        r.span.latitudeDelta = max(r.span.latitudeDelta, 0.004)
-        r.span.longitudeDelta = max(r.span.longitudeDelta, 0.004)
-        withAnimation(.easeInOut(duration: 0.55)) { camera = .region(r) }
+    }
+
+    /// Keep a tracked bus centred as it moves, without fighting the user.
+    ///
+    /// Recentring is skipped while the map is being dragged, and only happens
+    /// once the marker has drifted meaningfully from the middle — otherwise
+    /// the map twitches on every animation frame.
+    private func followTrackedVehicle() {
+        guard let door = engine.trackedVehicleDoorNo, !mapIsBeingDragged,
+              let d = motion.display(doorNo: door),
+              let centre = currentCentre, let span = currentSpan else { return }
+        // A tenth of the visible height is enough drift to re-centre on.
+        let slack = span.latitudeDelta * 0.18
+        if abs(d.coordinate.latitude - centre.latitude) > slack
+            || abs(d.coordinate.longitude - centre.longitude) > span.longitudeDelta * 0.18 {
+            withAnimation(.easeInOut(duration: 0.8)) {
+                camera = .region(MKCoordinateRegion(center: d.coordinate, span: span))
+            }
+        }
+    }
+
+    /// The map-tap chooser, drawn in place.
+    @ViewBuilder
+    private var pinChooser: some View {
+        if pendingPin != nil {
+            VStack(spacing: RV.Space.s) {
+                Text("Use this point as").rvOverlineStyle()
+                Button("Starting point") { setPin(asOrigin: true) }
+                    .buttonStyle(.rvProminent)
+                Button("Destination") { setPin(asOrigin: false) }
+                    .buttonStyle(.rvSecondary)
+                Button("Cancel") { pendingPin = nil }
+                    .font(.rvCallout).foregroundStyle(RV.Color.inkMuted)
+                    .padding(.top, 2)
+            }
+            .padding(RV.Space.l)
+            .frame(maxWidth: 280)
+            .glassEffect(.regular, in: .rect(cornerRadius: RV.Radius.l, style: .continuous))
+            .shadow(color: .black.opacity(0.18), radius: 20, y: 8)
+            .transition(.scale(scale: 0.94).combined(with: .opacity))
+        }
     }
 
     private func frameJourney() {

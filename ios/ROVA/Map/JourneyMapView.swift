@@ -13,6 +13,11 @@ struct JourneyMapView: View {
     @EnvironmentObject var motion: VehicleAnimator
 
     @Binding var camera: MapCameraPosition
+    /// Reports the visible region so the caller can follow a vehicle without
+    /// overriding the zoom the user has chosen.
+    var onCameraChange: ((CLLocationCoordinate2D, MKCoordinateSpan) -> Void)? = nil
+    /// True while the user is manipulating the map; following pauses then.
+    var onInteractionChange: ((Bool) -> Void)? = nil
     var onTapMap: (CLLocationCoordinate2D) -> Void
 
     private var journey: LiveJourney? { engine.focusedJourney }
@@ -98,6 +103,14 @@ struct JourneyMapView: View {
             .onTapGesture { pt in
                 if let c = proxy.convert(pt, from: .local) { onTapMap(c) }
             }
+            .onMapCameraChange(frequency: .continuous) { ctx in
+                onCameraChange?(ctx.region.center, ctx.region.span)
+            }
+            // While a finger is on the map, nothing moves it but the finger.
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { _ in onInteractionChange?(true) }
+                    .onEnded { _ in onInteractionChange?(false) })
         }
         .onChange(of: journey?.option.id) { _, _ in requestWalks() }
         .onChange(of: engine.tripDoorNo) { _, trip in

@@ -98,6 +98,46 @@ final class LiveIntegrationTests: XCTestCase {
         }
     }
 
+    /// Does a push actually arrive, without anyone pressing refresh?
+    ///
+    /// The socket was built and wired, but never verified end to end from
+    /// the app's own code. "I had to press refresh to see it move" is the
+    /// symptom of this path being silently dead, so it is tested rather
+    /// than assumed.
+    func testSocketDeliversAPushWithoutPolling() async throws {
+        let cfg = try XCTUnwrap(BackendClient.bundledConfig(),
+                                "no backend configured — cannot test the socket")
+        let socket = LiveSocket.shared
+        await socket.configure(cfg)
+
+        let got = expectation(description: "a push arrives")
+        let box = PushBox()
+        await socket.onVehicles { line, vehicles in
+            Task { if await box.record(line: line, count: vehicles.count) { got.fulfill() } }
+        }
+        // A busy line, so something is running whenever buses are.
+        await socket.subscribe(to: ["34C", "146"])
+
+        await fulfillment(of: [got], timeout: 120)
+        let seen = await box.seen
+        XCTAssertFalse(seen.isEmpty, "the socket must deliver vehicles on its own")
+        let state = await socket.state
+        XCTAssertEqual(state, .live, "the socket must report itself live")
+        await socket.disconnect()
+    }
+
+    /// Collects pushes without tripping over concurrency.
+    private actor PushBox {
+        private(set) var seen: [String: Int] = [:]
+        private var fired = false
+        func record(line: String, count: Int) -> Bool {
+            seen[line] = count
+            if fired { return false }
+            fired = true
+            return true
+        }
+    }
+
     func testFetchesRealVehiclesFromIETT() async throws {
         let client = IETTLiveClient()
         let vehicles = try await live { try await client.vehicles(line: "146", force: true) }
