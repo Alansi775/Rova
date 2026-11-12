@@ -96,10 +96,22 @@ final class JourneyEngine: ObservableObject {
     /// ordering that matters: walk + wait (live if known, timetable otherwise)
     /// + ride. A faster bus you have to wait 40 minutes for is not the best
     /// option at 5 a.m.
+    /// Where the current plan was made from, so the walk to the boarding stop
+    /// can be measured rather than estimated.
+    private(set) var plannedOrigin: CLLocationCoordinate2D?
+
     var journeys: [LiveJourney] {
         let all = options.map { o -> LiveJourney in
             let l = live[o.id]
-            return LiveJourney(option: o, nearestETA: l?.eta, alternatives: l?.alternatives ?? [])
+            var j = LiveJourney(option: o, nearestETA: l?.eta, alternatives: l?.alternatives ?? [])
+            // Measured pedestrian routing for the walk that drives "leave
+            // now". Nil until Apple answers; the estimate stands meanwhile,
+            // labelled as an estimate.
+            if let origin = plannedOrigin,
+               let board = o.busLegs.first?.boardStop {
+                j.measuredWalk = WalkTimes.shared.walk(from: origin, to: board)
+            }
+            return j
         }
         return all.sorted { doorToDoor($0) < doorToDoor($1) }
     }
@@ -168,6 +180,7 @@ final class JourneyEngine: ObservableObject {
         // user is in the middle of. While a trip is running, only an explicit
         // action may replan.
         if tripDoorNo != nil && !force { return }
+        plannedOrigin = from
         isPlanning = true
         let p = planner
         let result = await Task.detached(priority: .userInitiated) {

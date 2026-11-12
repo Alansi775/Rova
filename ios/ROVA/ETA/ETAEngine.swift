@@ -138,7 +138,18 @@ struct ETAEngine {
             spread = max(spread, stalled)
         }
 
-        let minM = max(0, (seconds - spread) / 60)
+        // The early end of the range is bounded by the road, not just by the
+        // spread. A wide spread used to drag the lower bound to zero, giving
+        // ranges like "0–47 min" — and because `leaveInSeconds` is measured
+        // against that lower bound, a zero there reads as "leave now" for a
+        // bus that is kilometres away. That is the false urgency that sends
+        // someone down to an empty stop.
+        //
+        // `implausibleSpeed` is the fastest a city bus could conceivably
+        // average door to door, so remaining distance divided by it is the
+        // soonest this bus could physically be here.
+        let physicalFloor = remaining / implausibleSpeed
+        let minM = max(0, max(physicalFloor, seconds - spread) / 60)
         let maxM = (seconds + spread) / 60
         return ETA(vehicleDoorNo: vehicle.doorNo,
                    lineCode: pattern.line,

@@ -210,6 +210,33 @@ final class ETATests: XCTestCase {
                 lastFix: Date().addingTimeInterval(-ageSeconds), nearStopCode: nil)
     }
 
+    /// The "0–47 min" range, and the false "leave now" it produced.
+    ///
+    /// `leaveInSeconds` is measured against the early end of the range, so a
+    /// lower bound of zero tells someone to leave immediately for a bus that
+    /// is kilometres away. The early end must be bounded by the road.
+    func testEarlyEndOfRangeIsBoundedByDistance() throws {
+        let (p, stops, shape) = corridor()
+        guard stops.count > 14, shape.count > 2 else {
+            throw XCTSkip("pattern too short")
+        }
+        let v = vehicle(at: 0, shape: shape, pattern: p.id)
+        guard let eta = engine.estimate(vehicle: v, pattern: p,
+                                        stopIndex: 13, history: nil),
+              let remaining = eta.remainingMetres, remaining > 500 else {
+            throw XCTSkip("no distant estimate available in this corridor")
+        }
+
+        // Soonest physically possible: remaining distance at the fastest a
+        // city bus could conceivably average.
+        let floorMinutes = remaining / engine.implausibleSpeed / 60
+        XCTAssertGreaterThanOrEqual(
+            eta.rangeMinutes.lowerBound, floorMinutes - 0.01,
+            "a bus \(Int(remaining)) m away cannot arrive in \(eta.rangeMinutes.lowerBound) min")
+        XCTAssertGreaterThan(eta.rangeMinutes.lowerBound, 0,
+                             "a distant bus must never show an early bound of zero")
+    }
+
     func testEstimateUsesScheduledRunningTime() {
         let (p, stops, shape) = corridor()
         let v = vehicle(at: 2, shape: shape, pattern: p.id)
@@ -311,6 +338,48 @@ final class ETATests: XCTestCase {
 }
 
 // MARK: - Formatting
+
+final class ModeTests: XCTestCase {
+
+    /// Every 34* line in the bundled network is a Metrobüs corridor, and the
+    /// mode rule is checked against the real data rather than a hand-written
+    /// list that could drift away from it.
+    func testEveryThirtyFourLineIsMetrobus() {
+        let store = TransitStore.shared
+        let codes = store.patterns.values.map(\.line).filter { $0.hasPrefix("34") }
+        XCTAssertFalse(codes.isEmpty, "the bundle must contain Metrobüs lines")
+        for c in Set(codes) {
+            XCTAssertEqual(TransitMode.of(line: c), .metrobus,
+                           "\(c) should be recognised as Metrobüs")
+        }
+    }
+
+    func testOrdinaryLinesAreNotMetrobus() {
+        for c in ["146", "142", "76O", "HS2", "144A", "340"] {
+            XCTAssertEqual(TransitMode.of(line: c), .bus,
+                           "\(c) must not be treated as Metrobüs")
+        }
+    }
+
+    /// The trap that made the app look like it was lying: a stop named after
+    /// the Metrobüs that no Metrobüs calls at. The app must be able to state
+    /// what really serves a stop.
+    func testStopNamedAfterTheMetrobusIsNotServedByIt() {
+        let store = TransitStore.shared
+        let lines = store.linesCalling(at: "101452")   // "AVCILAR METROBÜS"
+        XCTAssertFalse(lines.isEmpty, "the stop must be served by something")
+        XCTAssertFalse(lines.contains { TransitMode.of(line: $0) == .metrobus },
+                       "no Metrobüs calls at 101452 — the name is misleading, "
+                       + "which is exactly why the lines are shown in search")
+    }
+
+    /// And the real platforms are served by it.
+    func testRealMetrobusPlatformIsServedByMetrobus() {
+        let lines = TransitStore.shared.linesCalling(at: "900332")
+        XCTAssertTrue(lines.contains { TransitMode.of(line: $0) == .metrobus },
+                      "900332 is a Metrobüs platform; got \(lines)")
+    }
+}
 
 final class FormatTests: XCTestCase {
     func testDurations() {

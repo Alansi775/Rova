@@ -189,8 +189,22 @@ struct LiveJourney: Identifiable, Sendable, Hashable {
     let alternatives: [ETA]
     var id: UUID { option.id }
 
+    /// A measured pedestrian route to the boarding stop, when one is known.
+    /// Set by `JourneyEngine`; nil means nobody has measured this walk yet.
+    var measuredWalk: WalkTimes.Walk? = nil
+
     /// Seconds of walking between here and the boarding stop.
-    var walkToStopSeconds: Int { option.legs.first(where: { $0.kind == .walk })?.seconds ?? 0 }
+    ///
+    /// Prefers a measured pedestrian route over the planner's straight-line
+    /// estimate, because this figure decides when you are told to leave.
+    var walkToStopSeconds: Int {
+        if let m = measuredWalk { return m.seconds }
+        return option.legs.first(where: { $0.kind == .walk })?.seconds ?? 0
+    }
+
+    /// False when the walk is still the planner's straight-line estimate.
+    /// The UI says so rather than letting an estimate look like a measurement.
+    var walkIsMeasured: Bool { measuredWalk?.isMeasured == true }
 
     /// The first vehicle you could actually reach on foot.
     ///

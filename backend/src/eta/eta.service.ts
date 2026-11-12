@@ -138,7 +138,11 @@ export class EtaService {
       stopCode,
       predictedArrivalMinutes: round(seconds / 60),
       arrivalRangeMinutes: {
-        minimum: round(Math.max(0, (seconds - spread) / 60)),
+        // Bounded by the road, not only by the spread: a wide spread used to
+        // drag this to zero, and a zero early bound reads as "leave now" for
+        // a bus that is kilometres away.
+        minimum: round(Math.max(0,
+          Math.max(remainingMetres / IMPLAUSIBLE_SPEED, seconds - spread) / 60)),
         maximum: round((seconds + spread) / 60),
       },
       lastGpsUpdateSeconds: Math.round(age),

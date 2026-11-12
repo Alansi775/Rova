@@ -34,6 +34,11 @@ enum RV {
         /// into it and the button read as empty. This flips with the
         /// appearance, so the contrast is always maximal.
         static let onInk       = SwiftUI.Color(uiColor: .systemBackground)
+
+        /// The Metrobüs. A mode colour, not a status colour: it sits outside
+        /// green/amber/grey so a vehicle's *kind* is never read as its
+        /// data freshness.
+        static let metrobus    = SwiftUI.Color.indigo
     }
 
     enum Space {
@@ -50,6 +55,59 @@ enum RV {
         static let m:  CGFloat = 20
         static let l:  CGFloat = 28
         static let pill: CGFloat = 999
+    }
+}
+
+
+// MARK: - Mode
+
+/// What kind of vehicle a line is run by.
+///
+/// The Metrobüs is a separate system from the ordinary bus network: its own
+/// right-of-way, its own platforms, its own stop codes (`9003xx`), and its own
+/// line codes — every `34*` line in the İETT network is a Metrobüs corridor
+/// and nothing else uses that prefix. Verified against the bundled network:
+/// ten such lines, all of them Metrobüs.
+///
+/// Telling them apart at a glance matters because they are not
+/// interchangeable. The stop named "AVCILAR METROBÜS" is an ordinary bus stop
+/// named *after* the Metrobüs station; the actual platforms are 242 m away
+/// under a different name. Colour is what makes that difference visible
+/// before you walk to the wrong one.
+enum TransitMode: Sendable {
+    case metrobus
+    case bus
+
+    static func of(line: String) -> TransitMode {
+        let c = line.uppercased()
+        guard c.hasPrefix("34") else { return .bus }
+        // "34", "34A", "34BZ" are Metrobüs; a hypothetical "340" is not.
+        let rest = c.dropFirst(2)
+        return rest.allSatisfy { $0.isLetter } ? .metrobus : .bus
+    }
+
+    /// Indigo for the Metrobüs, ink for everything else. Deliberately outside
+    /// the status palette — green, amber and grey mean data freshness, and a
+    /// mode must never be mistaken for a state.
+    var tint: Color {
+        switch self {
+        case .metrobus: return RV.Color.metrobus
+        case .bus:      return RV.Color.ink
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .metrobus: return "tram.fill"
+        case .bus:      return "bus.fill"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .metrobus: return "Metrobüs"
+        case .bus:      return "Bus"
+        }
     }
 }
 
@@ -96,16 +154,23 @@ struct RVCard<Content: View>: View {
 /// The line-number badge used everywhere a bus line is named.
 struct LineBadge: View {
     let code: String
-    var tint: Color = RV.Color.accent
+    /// Defaults to the line's mode colour. Pass a tint only to override it.
+    var tint: Color? = nil
     var compact = false
+
+    private var fill: Color { tint ?? TransitMode.of(line: code).tint }
+    /// White on an indigo badge, but the ink badge is white in dark mode —
+    /// so the label follows the fill rather than being hardcoded.
+    private var label: Color { fill == RV.Color.ink ? RV.Color.onInk : .white }
+
     var body: some View {
         Text(code)
             .font(.system(size: compact ? 12 : 14, weight: .bold, design: .rounded))
             .monospacedDigit()
-            .foregroundStyle(.white)
+            .foregroundStyle(label)
             .padding(.horizontal, compact ? 7 : 9)
             .padding(.vertical, compact ? 3 : 5)
-            .background(tint, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .background(fill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             .fixedSize()
     }
 }

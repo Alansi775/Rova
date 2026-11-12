@@ -195,7 +195,8 @@ struct HeroCard: View {
             // fix with a 0–47 minute range used to say it anyway.
             if eta.stalledSeconds == nil, eta.confidence != .low,
                let leaveIn = journey.leaveInSeconds {
-                LeaveBanner(seconds: leaveIn, window: journey.arrivalWindow)
+                LeaveBanner(seconds: leaveIn, window: journey.arrivalWindow,
+                            walkIsMeasured: journey.walkIsMeasured)
             } else if eta.stalledSeconds == nil, journey.leaveInSeconds != nil {
                 Label("Not certain enough to tell you when to leave.",
                       systemImage: "questionmark.circle")
@@ -241,6 +242,9 @@ struct HeroCard: View {
 struct LeaveBanner: View {
     let seconds: Int
     var window: ClosedRange<Date>?
+    /// False when the walking time behind this advice is the planner's
+    /// straight-line estimate rather than a measured pedestrian route.
+    var walkIsMeasured: Bool = true
     // Urgency is weight, not colour: ink for "go now", amber for "soon",
     // green for "you have time". Nothing in ROVA is red.
     private var tint: Color { seconds < 45 ? RV.Color.ink : (seconds < 120 ? RV.Color.warn : RV.Color.live) }
@@ -258,6 +262,13 @@ struct LeaveBanner: View {
                     Text("it can arrive \(Fmt.clock(w.lowerBound))–\(Fmt.clock(w.upperBound))")
                         .font(.system(size: 11, weight: .medium))
                         .opacity(0.8)
+                }
+                if !walkIsMeasured {
+                    // The walk is the straight line, not the pavement. Say so:
+                    // this advice is only as good as the number behind it.
+                    Text("walking time estimated, not measured")
+                        .font(.system(size: 11, weight: .medium))
+                        .opacity(0.7)
                 }
             }
             Spacer(minLength: 0)

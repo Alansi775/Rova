@@ -32,7 +32,7 @@ struct SearchView: View {
                                 onPick(Place(name: stop.name, subtitle: "\(stop.district) · İETT stop",
                                              lat: stop.lat, lon: stop.lon))
                             } label: {
-                                row(stop.name, "\(stop.district) · \(Fmt.distance(d))", "signpost.right.fill")
+                                stopRow(stop, d)
                             }
                         }
                     }
@@ -63,6 +63,41 @@ struct SearchView: View {
 
     private func quick(_ t: String, _ icon: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) { row(t, "", icon) }
+    }
+
+    /// A stop, with the lines that actually call there.
+    ///
+    /// A stop's name is not a reliable guide to what serves it: "AVCILAR
+    /// METROBÜS" is an ordinary bus stop named after the Metrobüs station and
+    /// no Metrobüs calls there at all. Choosing it expecting a Metrobüs makes
+    /// the app look like it is lying when it is the name that misleads. The
+    /// badges say what is true before the choice is made.
+    @ViewBuilder
+    private func stopRow(_ stop: Stop, _ d: Double) -> some View {
+        let lines = TransitStore.shared.linesCalling(at: stop.code)
+        HStack(spacing: RV.Space.m) {
+            Image(systemName: "signpost.right.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(RV.Color.accent).frame(width: 22)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(stop.name).font(.rvBody).foregroundStyle(RV.Color.ink).lineLimit(1)
+                Text("\(stop.district) · \(Fmt.distance(d))")
+                    .font(.rvCaption).foregroundStyle(RV.Color.inkMuted).lineLimit(1)
+                if lines.isEmpty {
+                    Text("no scheduled line calls here")
+                        .font(.rvCaption).foregroundStyle(RV.Color.inkFaint)
+                } else {
+                    HStack(spacing: 4) {
+                        ForEach(lines.prefix(5), id: \.self) { LineBadge(code: $0, compact: true) }
+                        if lines.count > 5 {
+                            Text("+\(lines.count - 5)")
+                                .font(.rvCaption).foregroundStyle(RV.Color.inkMuted)
+                        }
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
     }
 
     private func row(_ t: String, _ s: String, _ icon: String) -> some View {
