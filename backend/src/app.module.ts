@@ -8,6 +8,7 @@ import { IngestionService } from './vehicles/ingestion.service';
 import { VehiclesController } from './vehicles/vehicles.controller';
 import { EtaService } from './eta/eta.service';
 import { PredictionsService } from './predictions/predictions.service';
+import { SamplerService } from './predictions/sampler.service';
 import { TrackingGateway } from './tracking/tracking.gateway';
 import { HealthController } from './health/health.controller';
 
@@ -19,6 +20,6 @@ import { HealthController } from './health/health.controller';
   ],
   controllers: [HealthController, VehiclesController],
   providers: [NetworkService, IettClient, IngestionService, EtaService,
-              PredictionsService, TrackingGateway],
+              PredictionsService, SamplerService, TrackingGateway],
 })
 export class AppModule {}

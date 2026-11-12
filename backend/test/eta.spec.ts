@@ -172,3 +172,24 @@ describe('ETA engine', () => {
     expect(r).toBeNull();
   });
 });
+
+/**
+ * The sampler decides *what* gets measured, so its selection rules matter as
+ * much as the engine's arithmetic: a sampler that quietly skips hard cases
+ * would produce a flattering accuracy figure from real data.
+ */
+describe('prediction sampler selection rules', () => {
+  const { SamplerService } = require('../src/predictions/sampler.service');
+
+  it('spreads predictions across horizons rather than sampling one distance', () => {
+    expect(SamplerService.STOPS_AHEAD.length).toBeGreaterThanOrEqual(3);
+    const sorted = [...SamplerService.STOPS_AHEAD].sort((a: number, b: number) => a - b);
+    expect(sorted[0]).toBeLessThanOrEqual(3);
+    expect(sorted[sorted.length - 1]).toBeGreaterThanOrEqual(10);
+    expect(SamplerService.STOPS_AHEAD).toEqual(sorted);
+  });
+
+  it('dedupes far enough apart that polling cannot flood one arrival', () => {
+    expect(SamplerService.DEDUPE_MS).toBeGreaterThanOrEqual(60_000);
+  });
+});

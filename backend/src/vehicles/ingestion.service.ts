@@ -60,7 +60,26 @@ export class IngestionService implements OnModuleInit {
 
   constructor(private readonly db: DbService, private readonly iett: IettClient) {}
 
-  onModuleInit() {
+  async onModuleInit() {
+    // Re-adopt the lines this backend has watched before.
+    //
+    // `watch()` only ever added to an in-memory list, so every restart threw
+    // away everything the phone had asked for and fell back to the two seed
+    // lines. Accuracy measurement then covered almost nothing: 275 stored
+    // Metrobüs positions stopped being refreshed the moment the process
+    // bounced, and the sampler saw a single bus.
+    try {
+      const seen = await this.db.query<{ line_code: string }>(
+        `SELECT DISTINCT line_code FROM vehicle_positions
+          WHERE source_time > now() - interval '7 days'
+          LIMIT 40`);
+      for (const r of seen) {
+        if (r.line_code && !this.lines.includes(r.line_code)) this.lines.push(r.line_code);
+      }
+    } catch {
+      // A cold database is not a reason to refuse to start.
+    }
+
     for (const l of this.lines) {
       this.health.set(l, {
         lineCode: l, lastAttempt: null, lastSuccess: null, latestSourceTime: null,
