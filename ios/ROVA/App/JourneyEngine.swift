@@ -104,6 +104,7 @@ final class JourneyEngine: ObservableObject {
         let all = options.map { o -> LiveJourney in
             let l = live[o.id]
             var j = LiveJourney(option: o, nearestETA: l?.eta, alternatives: l?.alternatives ?? [])
+            j.subjectDoorNo = countdownSubject[o.id]
             // Measured pedestrian routing for the walk that drives "leave
             // now". Nil until Apple answers; the estimate stands meanwhile,
             // labelled as an estimate.
@@ -188,6 +189,8 @@ final class JourneyEngine: ObservableObject {
         }.value
         options = result
         live = [:]
+        countdownSubject = [:]
+        countdownChanged = []
         departureCache = [:]
         if let sel = selected, !result.contains(where: { $0.id == sel.id }) { selected = nil }
         isPlanning = false
@@ -368,7 +371,47 @@ final class JourneyEngine: ObservableObject {
             next[o.id] = (cands.first?.eta, cands.dropFirst().prefix(4).map(\.eta))
         }
         live = next
+        holdCountdownSubjects()
         refreshMotion()
+    }
+
+    /// Which vehicle each journey's countdown is about.
+    ///
+    /// Kept across refreshes so the headline cannot silently jump from one
+    /// bus to another. A subject is released only when its vehicle is no
+    /// longer reporting an arrival at all — it has passed the stop, or gone
+    /// quiet past the usable age — and the replacement is then the soonest
+    /// bus that can still be reached.
+    private var countdownSubject: [UUID: String] = [:]
+
+    /// Journeys whose countdown changed to a different vehicle on the last
+    /// refresh, so the screen can say the previous one is gone rather than
+    /// quietly showing a different number.
+    private(set) var countdownChanged: Set<UUID> = []
+
+    private func holdCountdownSubjects() {
+        var changed: Set<UUID> = []
+        for o in options {
+            let pool = ([live[o.id]?.0].compactMap { $0 } + (live[o.id]?.1 ?? []))
+            let doors = Set(pool.compactMap(\.vehicleDoorNo))
+
+            if let current = countdownSubject[o.id], doors.contains(current) {
+                continue                      // still approaching: keep counting it
+            }
+            // Gone. Choose the soonest one that can still be reached, and
+            // record that the subject moved.
+            var j = LiveJourney(option: o, nearestETA: live[o.id]?.0,
+                                alternatives: live[o.id]?.1 ?? [])
+            if let origin = plannedOrigin, let board = o.busLegs.first?.boardStop {
+                j.measuredWalk = WalkTimes.shared.walk(from: origin, to: board)
+            }
+            let replacement = j.firstCatchable?.vehicleDoorNo ?? j.allETAs.first?.vehicleDoorNo
+            if countdownSubject[o.id] != nil, replacement != countdownSubject[o.id] {
+                changed.insert(o.id)
+            }
+            countdownSubject[o.id] = replacement
+        }
+        countdownChanged = changed
     }
 
     // MARK: vehicle lookup

@@ -78,12 +78,25 @@ enum TransitMode: Sendable {
     case metrobus
     case bus
 
+    case rail
+
+    @MainActor
     static func of(line: String) -> TransitMode {
         let c = line.uppercased()
+        // Rail is whatever Metro İstanbul publishes as a line: M, T, F, TF.
+        // Checked against the fetched network rather than a pattern, so a
+        // new line is recognised the day it opens.
+        if MetroNetwork.shared.colour(of: c) != nil { return .rail }
         guard c.hasPrefix("34") else { return .bus }
         // "34", "34A", "34BZ" are Metrobüs; a hypothetical "340" is not.
         let rest = c.dropFirst(2)
         return rest.allSatisfy { $0.isLetter } ? .metrobus : .bus
+    }
+
+    /// The published colour for a rail line, when the line is known.
+    @MainActor
+    static func tint(forLine line: String) -> Color {
+        MetroNetwork.shared.colour(of: line) ?? of(line: line).tint
     }
 
     /// Indigo for the Metrobüs, ink for everything else. Deliberately outside
@@ -93,18 +106,25 @@ enum TransitMode: Sendable {
         switch self {
         case .metrobus: return RV.Color.metrobus
         case .bus:      return RV.Color.ink
+        // Only reached when a rail line has no published colour; the real
+        // one comes from MetroNetwork.
+        case .rail:     return RV.Color.ink
         }
     }
 
     /// Both are buses, and the Metrobüs is drawn as one. It runs on tyres in
     /// a bus lane; a tram or metro glyph says something untrue about it. The
     /// colour carries the distinction instead.
-    var symbol: String { "bus.fill" }
+    /// Buses and the Metrobüs are drawn as buses — the Metrobüs runs on
+    /// tyres in a bus lane, and a rail glyph would say something untrue
+    /// about it. Rail gets a train.
+    var symbol: String { self == .rail ? "tram.fill" : "bus.fill" }
 
     var label: String {
         switch self {
         case .metrobus: return "Metrobüs"
         case .bus:      return "Bus"
+        case .rail:     return "Rail"
         }
     }
 }
@@ -156,7 +176,7 @@ struct LineBadge: View {
     var tint: Color? = nil
     var compact = false
 
-    private var fill: Color { tint ?? TransitMode.of(line: code).tint }
+    private var fill: Color { tint ?? TransitMode.tint(forLine: code) }
     /// White on an indigo badge, but the ink badge is white in dark mode —
     /// so the label follows the fill rather than being hardcoded.
     private var label: Color { fill == RV.Color.ink ? RV.Color.onInk : .white }

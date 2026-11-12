@@ -382,6 +382,108 @@ final class ETATests: XCTestCase {
 
 // MARK: - Formatting
 
+final class MetroNetworkTests: XCTestCase {
+
+    /// Colours come from Metro İstanbul's own field, parsed as published.
+    /// M2's green and M1A's red are the shades İstanbul signs those lines
+    /// with, taken from the service rather than from memory.
+    func testParsesPublishedLineColours() {
+        let json = """
+        {"Success":true,"Error":null,"Data":[
+          {"Id":1,"Name":"M2","Color":{"Color_R":"0","Color_G":"153","Color_B":"68"},
+           "FirstTime":"05:57","LastTime":"00:00"},
+          {"Id":2,"Name":"M1A","Color":{"Color_R":"238","Color_G":"49","Color_B":"36"},
+           "FirstTime":"05:50","LastTime":"00:00"}]}
+        """
+        let lines = MetroNetwork.decodeLinesForTesting(json)
+        XCTAssertEqual(lines?.count, 2)
+        let m2 = lines?.first { $0.name == "M2" }
+        XCTAssertEqual(m2?.colourR, 0)
+        XCTAssertEqual(m2?.colourG, 153)
+        XCTAssertEqual(m2?.colourB, 68)
+        XCTAssertEqual(m2?.firstTime, "05:57")
+        let m1a = lines?.first { $0.name == "M1A" }
+        XCTAssertEqual(m1a?.colourR, 238)
+    }
+
+    /// A line with no published colour must not be given an invented one.
+    func testMissingColourIsNotInvented() {
+        let json = """
+        {"Success":true,"Error":null,"Data":[
+          {"Id":9,"Name":"M99","Color":null,"FirstTime":null,"LastTime":null}]}
+        """
+        let lines = MetroNetwork.decodeLinesForTesting(json)
+        XCTAssertEqual(lines?.first?.colourR, 0)
+        XCTAssertEqual(lines?.first?.colourG, 0)
+        XCTAssertEqual(lines?.first?.colourB, 0)
+    }
+}
+
+final class CountdownTests: XCTestCase {
+
+    private func eta(_ door: String, minutes: Double) -> ETA {
+        ETA(vehicleDoorNo: door, lineCode: "146", patternId: "p",
+            predictedMinutes: minutes,
+            rangeMinutes: max(0, minutes - 1)...(minutes + 1),
+            lastFixAge: 30, confidence: .high, lowConfidenceReason: nil,
+            state: .liveGPS(age: 30), remainingMetres: minutes * 400,
+            stopsAway: Int(minutes / 2) + 1)
+    }
+
+    private func journey(subject: String?, etas: [ETA], walk: Int) -> LiveJourney {
+        let board = Stop(code: "S1", name: "Board", lat: 41.0, lon: 28.7,
+                         district: "D", direction: "G", smart: false)
+        let leg = JourneyLeg(kind: .bus, seconds: 600, distanceMetres: 3000,
+                             lineCode: "146", patternId: "p", headsign: "H",
+                             boardStop: board, alightStop: nil,
+                             intermediateStops: 4, shape: [])
+        let walkLeg = JourneyLeg(kind: .walk, seconds: walk, distanceMetres: 500,
+                                 lineCode: nil, patternId: nil, headsign: nil,
+                                 boardStop: nil, alightStop: nil,
+                                 intermediateStops: 0, shape: [])
+        let opt = JourneyOption(legs: [walkLeg, leg])
+        var j = LiveJourney(option: opt, nearestETA: etas.first,
+                            alternatives: Array(etas.dropFirst()))
+        j.subjectDoorNo = subject
+        return j
+    }
+
+    /// The "2 minutes becomes an hour" failure.
+    ///
+    /// Watching a bus approach until it is nearer than your walk used to drop
+    /// it silently and promote the next one, an hour behind. The countdown
+    /// must stay on the bus it was counting.
+    func testCountdownStaysOnItsBusEvenWhenItBecomesUnreachable() {
+        let close = eta("A", minutes: 2)       // 2 min away
+        let later = eta("B", minutes: 62)      // an hour behind
+        let j = journey(subject: "A", etas: [close, later], walk: 11 * 60)
+
+        XCTAssertEqual(j.eta?.vehicleDoorNo, "A",
+                       "the countdown must not jump to a different bus")
+        XCTAssertFalse(j.isReachable, "an 11 minute walk cannot catch a 2 minute bus")
+        XCTAssertEqual(j.nextReachable?.vehicleDoorNo, "B",
+                       "and it must offer the one you can still catch")
+    }
+
+    /// With no subject yet, the soonest reachable bus is chosen.
+    func testWithoutASubjectThePickIsTheSoonestReachable() {
+        let close = eta("A", minutes: 2)
+        let later = eta("B", minutes: 62)
+        let j = journey(subject: nil, etas: [close, later], walk: 11 * 60)
+        XCTAssertEqual(j.eta?.vehicleDoorNo, "B")
+        XCTAssertTrue(j.isReachable)
+    }
+
+    /// A bus you can comfortably reach stays reachable.
+    func testReachableBusIsReported() {
+        let j = journey(subject: "A", etas: [eta("A", minutes: 20)], walk: 5 * 60)
+        XCTAssertEqual(j.eta?.vehicleDoorNo, "A")
+        XCTAssertTrue(j.isReachable)
+        XCTAssertNil(j.nextReachable)
+    }
+}
+
+@MainActor
 final class ModeTests: XCTestCase {
 
     /// Every 34* line in the bundled network is a Metrobüs corridor, and the

@@ -187,6 +187,27 @@ struct HeroCard: View {
                       systemImage: "figure.walk.departure")
                     .font(.rvCaption).foregroundStyle(RV.Color.inkFaint)
             }
+            // When the bus can no longer be reached, say it here rather than
+            // swapping the number for a different bus. Watching "2 minutes"
+            // become "an hour" with no explanation is the single thing that
+            // destroys trust in a countdown.
+            if !journey.isReachable, let next = journey.nextReachable {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("You can no longer reach this one on foot — it gets to "
+                          + "\(leg?.boardStop?.name ?? "the stop") before you could.",
+                          systemImage: "figure.walk.motion")
+                        .font(.rvCallout).foregroundStyle(RV.Color.ink)
+                    Text("Next you can catch: \(next.lineCode) · "
+                         + "\(Int(next.predictedMinutes.rounded())) min"
+                         + (next.vehicleDoorNo.map { " · \($0)" } ?? ""))
+                        .font(.rvCaption).foregroundStyle(RV.Color.inkMuted)
+                }
+                .padding(.horizontal, RV.Space.m).padding(.vertical, RV.Space.s)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RV.Color.warn.opacity(0.14),
+                            in: RoundedRectangle(cornerRadius: RV.Radius.s, style: .continuous))
+            }
+
             // Never send someone down to the street on data that cannot carry
             // the instruction. "Leave now" is the single most consequential
             // sentence in the app — it puts a person on the pavement — so it
@@ -194,7 +215,7 @@ struct HeroCard: View {
             // moving, and at a confidence above the floor. A 33-minute-old
             // fix with a 0–47 minute range used to say it anyway.
             if eta.stalledSeconds == nil, eta.confidence != .low,
-               let leaveIn = journey.leaveInSeconds {
+               journey.isReachable, let leaveIn = journey.leaveInSeconds {
                 LeaveBanner(seconds: leaveIn, window: journey.arrivalWindow,
                             walkIsMeasured: journey.walkIsMeasured)
             } else if eta.stalledSeconds == nil, journey.leaveInSeconds != nil {

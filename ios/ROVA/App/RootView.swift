@@ -124,6 +124,7 @@ struct RootView: View {
             }
         }
         .onDisappear { engine.stopLiveUpdates() }
+        .task { MetroNetwork.shared.load() }
         .onChange(of: engine.selected?.id) { _, _ in frameJourney() }
         // Tap a bus — in the list below or on the map — and the map goes to
         // it. Selecting a vehicle used to change only which callout was
