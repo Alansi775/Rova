@@ -447,6 +447,40 @@ final class MotionTests: XCTestCase {
         XCTAssertNil(h.stalledSeconds)
     }
 
+    /// A pushed update is re-validated exactly like a polled one.
+    func testSocketPushDecodesRealPayload() {
+        let json = """
+        {"type":"vehicles","lineCode":"146","vehicles":[
+          {"vehicleId":"K1617","patternId":"146_D_D0",
+           "position":{"lat":41.07938,"lon":28.6704635},
+           "sourceTime":"2026-11-12T20:40:58.000Z"}]}
+        """
+        let v = LiveSocket.decodeForTesting(json)
+        XCTAssertEqual(v?.count, 1)
+        XCTAssertEqual(v?.first?.doorNo, "K1617")
+        XCTAssertEqual(v?.first?.lineCode, "146")
+        XCTAssertEqual(v?.first?.patternId, "146_D_D0")
+    }
+
+    /// The socket must not become a hole in the validation. A server that
+    /// starts sending rubbish is not to be trusted just because it is ours.
+    func testSocketPushRejectsImpossiblePositionsAndFutureFixes() {
+        let outsideIstanbul = """
+        {"type":"vehicles","lineCode":"146","vehicles":[
+          {"vehicleId":"BAD","patternId":"p","position":{"lat":0,"lon":0},
+           "sourceTime":"2026-11-12T20:40:58.000Z"}]}
+        """
+        XCTAssertEqual(LiveSocket.decodeForTesting(outsideIstanbul)?.count, 0)
+
+        let future = ISO8601DateFormatter().string(from: Date().addingTimeInterval(3600))
+        let fromTheFuture = """
+        {"type":"vehicles","lineCode":"146","vehicles":[
+          {"vehicleId":"BAD","patternId":"p",
+           "position":{"lat":41.0,"lon":28.7},"sourceTime":"\(future)"}]}
+        """
+        XCTAssertEqual(LiveSocket.decodeForTesting(fromTheFuture)?.count, 0)
+    }
+
     /// Implausible speeds are data errors, not 300 km/h buses.
     func testImplausibleSpeedRejected() {
         var h = VehicleHistory()

@@ -225,7 +225,7 @@ to a specific stop sequence.
 | `api.ibb.gov.tr/iett/AracOzellik.asmx` | Vehicle attributes (accessibility, model). Not needed for ETA. |
 | `GetFiloAracKonum_json` | Also on the fleet service, but fleet-wide rather than per line, and the document attributes it to a third party (Akyolbil). `GetHatOtoKonum_json` is the right granularity and cheaper against the quota. |
 | `tkmservices.ibb.gov.tr` | Live ASP.NET Web API host, but no documented İETT bus-location route; returned 404 for the paths tried. Not used. |
-| **Metrobüs live positions** | No public source found. Metrobüs is served as a destination, not a tracked line. |
+| **Metrobüs live positions** | **Available**, under the route-variant line codes — not under `34`/`34A`. Measured 2026-11-13 over two hours: `34BZ` 93 vehicles, `34G` 86, `34C` 50, while `34` and `34A` held 3–5 between them. An earlier note in this file claimed Metrobüs publishes nothing; that was generalised from sampling only `34`/`34A` at a quiet moment and was wrong. |
 | Nominatim / OSM geocoding | Returned nothing for "Şafak Residence". Apple's `MKLocalSearch` resolved it exactly; that is what ROVA uses. |
 
 ---

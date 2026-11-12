@@ -67,7 +67,23 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
 
     if (msg.type === 'subscribe' && Array.isArray(msg.lines)) {
       c.lines = new Set(msg.lines.map(String));
-      socket.send(JSON.stringify({ type: 'subscribed', lines: [...c.lines] }));
+      // Subscribing is the statement "I am travelling on these lines", so it
+      // must also drive ingestion focus. Without this a socket client was
+      // pushed updates promptly — but only every seven minutes, because
+      // nothing had told the ingester the line mattered.
+      for (const l of c.lines) this.ingestion.watch(l);
+      socket.send(JSON.stringify({
+        type: 'subscribed',
+        lines: [...c.lines],
+        focused: this.ingestion.focusSet,
+      }));
+    }
+
+    // Keep the subscription alive without re-subscribing: the focus TTL is
+    // 15 minutes and a long ride outlasts it.
+    if (msg.type === 'ping') {
+      for (const l of c.lines) this.ingestion.watch(l);
+      socket.send(JSON.stringify({ type: 'pong', at: new Date().toISOString() }));
     }
   }
 }

@@ -19,6 +19,22 @@ export interface LineHealth {
  * and publishes the result. It never invents a position and never reports
  * healthy live tracking when the source has stopped moving.
  */
+
+/** How long a line stays focused after the phone last asked for it. */
+const FOCUS_TTL_MS = 15 * 60_000;
+/**
+ * İETT's own publishing cadence, measured from recorded position history:
+ * the smallest observed gap between two distinct fixes for one vehicle is
+ * 11–87 s. Polling faster than this spends quota to receive the same fix.
+ */
+const SOURCE_CADENCE_MS = 60_000;
+/**
+ * İETT's ceiling is 100 requests an hour. One line at 60 s already costs 60
+ * of them, so at most this many lines can be kept near the source's cadence
+ * at once; they share the interval between them.
+ */
+const MAX_FOCUSED = 2;
+
 @Injectable()
 export class IngestionService implements OnModuleInit {
   private readonly log = new Logger(IngestionService.name);
@@ -37,9 +53,8 @@ export class IngestionService implements OnModuleInit {
 
   private health = new Map<string, LineHealth>();
   private cursor = 0;
-  /** The line the phone is actually looking at, and when it last said so. */
-  private focusedLine: string | null = null;
-  private focusedAt = 0;
+  /** line → when the phone last said it was watching it. */
+  private focused = new Map<string, number>();
   private lastFetch = new Map<string, number>();
   private listeners = new Set<(line: string, vehicles: RawVehicle[]) => void>();
 
@@ -76,14 +91,43 @@ export class IngestionService implements OnModuleInit {
         validPositions: 0, stalePositions: 0, rejected: 0, error: null,
       });
     }
-    this.focusedLine = line;
-    this.focusedAt = Date.now();
+    // Focus is a small set, not a single slot.
+    //
+    // It used to be one line. A journey that changes from a bus to the
+    // Metrobüs involves two, so watching the second silently demoted the
+    // first to the seven-minute schedule — measured in production as a p10
+    // gap of 421 s on the user's own lines against 119 s on a focused one.
+    // The bus they were actually waiting for was the stale one.
+    this.focused.set(line, Date.now());
+    for (const [l, at] of this.focused) {
+      if (Date.now() - at >= FOCUS_TTL_MS) this.focused.delete(l);
+    }
+    // Keep the newest few; the quota cannot stretch further than that.
+    if (this.focused.size > MAX_FOCUSED) {
+      const oldest = [...this.focused.entries()].sort((a, b) => a[1] - b[1]);
+      for (const [l] of oldest.slice(0, this.focused.size - MAX_FOCUSED)) {
+        this.focused.delete(l);
+      }
+    }
   }
 
-  /** The watched line is forgotten when the phone stops asking for it. */
+  /** Lines the phone is actively travelling on; forgotten when it stops asking. */
+  private get activeFocusSet(): string[] {
+    const now = Date.now();
+    return [...this.focused.entries()]
+      .filter(([, at]) => now - at < FOCUS_TTL_MS)
+      .map(([l]) => l);
+  }
+
+  /** Back-compat: the most recently watched line. */
   private get activeFocus(): string | null {
-    return this.focusedLine && Date.now() - this.focusedAt < 15 * 60_000
-      ? this.focusedLine : null;
+    const now = Date.now();
+    let best: string | null = null;
+    let bestAt = 0;
+    for (const [l, at] of this.focused) {
+      if (now - at < FOCUS_TTL_MS && at > bestAt) { best = l; bestAt = at; }
+    }
+    return best;
   }
 
   /**
@@ -95,10 +139,16 @@ export class IngestionService implements OnModuleInit {
    * becomes fresh within seconds.
    */
   private intervalFor(line: string): number {
-    return line === this.activeFocus ? 60_000 : 420_000;
+    const focused = this.activeFocusSet;
+    if (!focused.includes(line)) return 420_000;
+    // Share the focused half of the budget between the focused lines, and
+    // never go below the source's own cadence — asking faster than İETT
+    // publishes spends quota to receive the same fix twice.
+    return Math.max(SOURCE_CADENCE_MS, focused.length * SOURCE_CADENCE_MS);
   }
 
   get focus(): string | null { return this.activeFocus; }
+  get focusSet(): string[] { return this.activeFocusSet; }
 
   get healthReport(): LineHealth[] { return [...this.health.values()]; }
   get budgetRemaining(): number { return this.iett.budget.remaining; }

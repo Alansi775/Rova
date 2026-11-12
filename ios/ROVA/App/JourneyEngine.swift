@@ -32,12 +32,44 @@ final class JourneyEngine: ObservableObject {
     /// Apply the user's backend settings. Safe to call repeatedly.
     func applyBackend(_ config: BackendClient.Config?) async {
         await BackendClient.shared.configure(config)
+        await LiveSocket.shared.configure(config)
         if config == nil {
             liveSource = .none
             backendStatus = "Off — reading İETT directly"
+            await LiveSocket.shared.disconnect()
         } else {
             backendStatus = "Connecting…"
+            await installSocketHandler()
         }
+    }
+
+    /// Push updates land here. They are merged exactly like polled ones, so a
+    /// pushed fix gets the same retention, the same güzergah filter and the
+    /// same pinning of the bus being followed — delivery changed, not truth.
+    private var socketInstalled = false
+    private func installSocketHandler() async {
+        guard !socketInstalled else { return }
+        socketInstalled = true
+        await LiveSocket.shared.onVehicles { [weak self] line, fresh in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.vehicles[line] = Self.merge(
+                    existing: self.vehicles[line] ?? [], fresh: fresh,
+                    pinned: self.tripDoorNo ?? self.onBoardDoorNo)
+                self.lastRefresh = Date()
+                self.liveSource = .backend
+                self.backendStatus = "Live — pushed from backend"
+                self.recompute()
+            }
+        }
+    }
+
+    /// Tell the backend which lines are worth the İETT quota, and keep the
+    /// socket subscribed to them.
+    private func syncSocketSubscription() {
+        let wanted = Set(watchList.prefix(2))
+        guard !wanted.isEmpty else { return }
+        Task { await LiveSocket.shared.subscribe(to: wanted) }
     }
 
     nonisolated func applyBackendLater(_ config: BackendClient.Config?) {
@@ -179,6 +211,10 @@ final class JourneyEngine: ObservableObject {
     /// more slowly.
     private func interval(for line: String) -> TimeInterval {
         let focused = line == focusedJourney?.option.busLegs.first?.lineCode
+        // With the socket live, polling is a safety net rather than the means
+        // of delivery: updates arrive as the backend ingests them. Keep a slow
+        // poll anyway, so a silently half-dead socket cannot freeze the map.
+        if socketIsLive { return focused ? 90 : 300 }
         // Reading from our own backend costs no İETT quota, so the watched
         // line can be pulled far more often — which is what keeps the map
         // feeling alive on mobile data.
@@ -190,13 +226,25 @@ final class JourneyEngine: ObservableObject {
         guard ticker == nil else { return }
         ticker = Task { [weak self] in
             while !Task.isCancelled {
+                await self?.pollSocketState()
                 await self?.tick()
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
             }
         }
     }
 
-    func stopLiveUpdates() { ticker?.cancel(); ticker = nil; motion.clear() }
+    @Published private(set) var socketIsLive = false
+
+    private func pollSocketState() async {
+        let s = await LiveSocket.shared.state
+        socketIsLive = (s == .live)
+        syncSocketSubscription()
+    }
+
+    func stopLiveUpdates() {
+        ticker?.cancel(); ticker = nil; motion.clear()
+        Task { await LiveSocket.shared.disconnect() }
+    }
 
     private func tick() async {
         // Pick the single most overdue line, so we never burst the İETT quota.
