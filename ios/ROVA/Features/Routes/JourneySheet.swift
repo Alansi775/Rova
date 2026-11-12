@@ -232,9 +232,27 @@ struct HeroCard: View {
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(RV.Color.ink)
             }
-            Label("No vehicle is reporting a GPS position on this line yet — this is the timetable, not a confirmed arrival.",
-                  systemImage: "info.circle")
-                .font(.rvCaption).foregroundStyle(RV.Color.inkFaint)
+            // Why there is no live bus, said here rather than in a footnote.
+            //
+            // The engine already knew it was being rate limited and could say
+            // when positions would resume, but that sentence lived in a small
+            // caption at the bottom of the sheet — usually below the fold. So
+            // the screen showed an empty map and no reason, which reads as
+            // the app being broken or making things up.
+            if let problem = engine.liveProblem {
+                Label(problem, systemImage: "exclamationmark.triangle.fill")
+                    .font(.rvCallout)
+                    .foregroundStyle(RV.Color.ink)
+                    .padding(.horizontal, RV.Space.m)
+                    .padding(.vertical, RV.Space.s)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RV.Color.warn.opacity(0.14),
+                                in: RoundedRectangle(cornerRadius: RV.Radius.s, style: .continuous))
+            } else {
+                Label("No vehicle is reporting a GPS position on this line yet — this is the timetable, not a confirmed arrival.",
+                      systemImage: "info.circle")
+                    .font(.rvCaption).foregroundStyle(RV.Color.inkFaint)
+            }
         }
     }
 }

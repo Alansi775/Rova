@@ -125,6 +125,14 @@ struct RootView: View {
         }
         .onDisappear { engine.stopLiveUpdates() }
         .onChange(of: engine.selected?.id) { _, _ in frameJourney() }
+        // Tap a bus — in the list below or on the map — and the map goes to
+        // it. Selecting a vehicle used to change only which callout was
+        // shown, so choosing a bus you could not already see told you
+        // nothing about where it was.
+        .onChange(of: engine.trackedVehicleDoorNo) { _, door in
+            guard let door else { return }
+            frameVehicle(door)
+        }
         .onChange(of: location.current?.coordinate.latitude) { _, _ in adoptCurrentLocation() }
         .onChange(of: settings.backendURL) { _, _ in engine.applyBackendLater(settings.effectiveBackend) }
         .onChange(of: settings.backendToken) { _, _ in engine.applyBackendLater(settings.effectiveBackend) }
@@ -191,6 +199,26 @@ struct RootView: View {
             camera = .region(MKCoordinateRegion(center: l.coordinate,
                                                 span: .init(latitudeDelta: 0.008, longitudeDelta: 0.008)))
         }
+    }
+
+    /// Centre on one vehicle, close enough to read the street it is on.
+    ///
+    /// The boarding stop is included when it is nearby, because "where is the
+    /// bus" and "where am I getting on" are the same question while waiting.
+    /// It is dropped when it is far, rather than zooming out until the bus is
+    /// a dot — the point of tapping a bus is to see the bus.
+    private func frameVehicle(_ door: String) {
+        guard let d = motion.display(doorNo: door) else { return }
+        var pts = [d.coordinate]
+        if let board = engine.focusedJourney?.option.busLegs.first?.boardStop?.coordinate,
+           Geo.metres(board, d.coordinate) < 2500 {
+            pts.append(board)
+        }
+        guard var r = region(fitting: pts) else { return }
+        // Never zoom out past a readable street level for a single vehicle.
+        r.span.latitudeDelta = max(r.span.latitudeDelta, 0.004)
+        r.span.longitudeDelta = max(r.span.longitudeDelta, 0.004)
+        withAnimation(.easeInOut(duration: 0.55)) { camera = .region(r) }
     }
 
     private func frameJourney() {

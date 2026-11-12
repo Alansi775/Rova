@@ -392,7 +392,7 @@ final class JourneyEngine: ObservableObject {
             // bus that was driving *away* appeared on the map as one coming
             // towards you. A vehicle is only drawn on this route if it says it
             // is running this güzergah.
-            guard v.patternId.isEmpty || v.patternId == ctx.patternId else { return false }
+            guard v.patternId.isEmpty || ctx.servingPatterns.contains(v.patternId) else { return false }
             guard let snap = Geo.snap(v.coordinate, to: ctx.shape) else { return false }
             let limit = onRouteDoors.contains(v.doorNo) ? 900.0 : 450.0
             guard snap.offset < limit else { return false }
@@ -407,6 +407,10 @@ final class JourneyEngine: ObservableObject {
         let shape: [CLLocationCoordinate2D]
         let boardAlong: Double
         let boardStop: Stop
+        /// Every güzergah of this line that calls at the boarding stop and
+        /// then the alighting stop, in that order — in other words, every
+        /// variant that can actually make this journey.
+        let servingPatterns: Set<String>
     }
 
     /// Geometry of the bus leg currently on screen.
@@ -419,9 +423,33 @@ final class JourneyEngine: ObservableObject {
         let stops = store.patternStops(pid)
         let boardIdx = stops.firstIndex { $0.stopCode == board.code } ?? 0
         let cum = Geo.cumulative(shape)
+
+        // A line runs several güzergah variants, and the timetable may pick
+        // one that nothing is driving right now. Requiring an exact match
+        // made every live bus invisible: on 34C the planner chose
+        // 34C_D_D9055, which had zero vehicles, while 142 were running other
+        // variants of the same line that call at both of these stops.
+        //
+        // So the test is what the vehicle's own güzergah does, not what it is
+        // called: does it stop here, and later there? That is read from the
+        // bundle, so it is a fact rather than a guess — and it still excludes
+        // the opposite direction, which was the reason for the strict rule in
+        // the first place, because a return variant reaches the alighting
+        // stop before the boarding one.
+        var serving: Set<String> = [pid]
+        if let alight = leg.alightStop {
+            for p in store.patterns(ofLine: line) {
+                let ps = store.patternStops(p.id)
+                guard let b = ps.firstIndex(where: { $0.stopCode == board.code }),
+                      let a = ps.firstIndex(where: { $0.stopCode == alight.code }),
+                      b < a else { continue }
+                serving.insert(p.id)
+            }
+        }
+
         return RouteContext(line: line, patternId: pid, shape: shape,
                             boardAlong: cum[min(boardIdx, cum.count - 1)],
-                            boardStop: board)
+                            boardStop: board, servingPatterns: serving)
     }
 
     /// Hands the animator the route and the latest fixes.
