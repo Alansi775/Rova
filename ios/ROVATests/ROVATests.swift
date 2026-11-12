@@ -229,12 +229,55 @@ final class ETATests: XCTestCase {
 
         // Soonest physically possible: remaining distance at the fastest a
         // city bus could conceivably average.
-        let floorMinutes = remaining / engine.implausibleSpeed / 60
+        let floorMinutes = remaining / engine.maxConceivableSpeed / 60
         XCTAssertGreaterThanOrEqual(
             eta.rangeMinutes.lowerBound, floorMinutes - 0.01,
             "a bus \(Int(remaining)) m away cannot arrive in \(eta.rangeMinutes.lowerBound) min")
         XCTAssertGreaterThan(eta.rangeMinutes.lowerBound, 0,
                              "a distant bus must never show an early bound of zero")
+    }
+
+    /// The headline must always lie inside its own range.
+    ///
+    /// A screenshot showed "8 min" above "21–293 min": a figure outside its
+    /// own interval. That is worse than either number alone, because it tells
+    /// the reader the app is not internally consistent.
+    func testPredictionAlwaysLiesInsideItsOwnRange() {
+        let (p, stops, shape) = corridor()
+        guard stops.count > 16 else { return }
+        for ageSeconds in [0.0, 60, 200, 400, 800] {
+            for target in [2, 6, 11, 15] {
+                let v = vehicle(at: 0, shape: shape, ageSeconds: ageSeconds, pattern: p.id)
+                guard let e = engine.estimate(vehicle: v, pattern: p,
+                                              stopIndex: target, history: nil) else { continue }
+                XCTAssertGreaterThanOrEqual(
+                    e.predictedMinutes, e.rangeMinutes.lowerBound - 0.001,
+                    "age \(ageSeconds)s, stop \(target): "
+                    + "\(e.predictedMinutes) is below its range \(e.rangeMinutes)")
+                XCTAssertLessThanOrEqual(
+                    e.predictedMinutes, e.rangeMinutes.upperBound + 0.001,
+                    "age \(ageSeconds)s, stop \(target): "
+                    + "\(e.predictedMinutes) is above its range \(e.rangeMinutes)")
+            }
+        }
+    }
+
+    /// İETT keeps publishing the last position of buses that finished hours
+    /// ago. One of those must never be described as approaching.
+    func testFixFromHoursAgoProducesNoEstimate() {
+        let (p, stops, shape) = corridor()
+        guard stops.count > 6 else { return }
+        // 466 minutes: the age shown on screen beside an "8 min" arrival.
+        let dead = vehicle(at: 0, shape: shape, ageSeconds: 466 * 60, pattern: p.id)
+        XCTAssertNil(engine.estimate(vehicle: dead, pattern: p, stopIndex: 5, history: nil),
+                     "a fix 466 minutes old is not evidence about where a bus is now")
+
+        // And the boundary is where it says it is.
+        let justInside = vehicle(at: 0, shape: shape,
+                                 ageSeconds: engine.maxUsableFixAge - 30, pattern: p.id)
+        XCTAssertNotNil(engine.estimate(vehicle: justInside, pattern: p,
+                                        stopIndex: 5, history: nil),
+                        "a fix inside the limit must still be usable")
     }
 
     func testEstimateUsesScheduledRunningTime() {

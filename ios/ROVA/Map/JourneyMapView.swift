@@ -215,9 +215,7 @@ struct VehicleMarker: View {
                 .frame(width: tracked ? 32 : 27, height: tracked ? 32 : 27)
                 .overlay(Circle().strokeBorder(state.tint, lineWidth: 3))
                 .shadow(color: .black.opacity(0.3), radius: 5, y: 2)
-            Image(systemName: mode == .metrobus
-                  ? "tram.fill"
-                  : (moving ? "bus.fill" : "bus"))
+            Image(systemName: moving ? "bus.fill" : "bus")
                 .font(.system(size: tracked ? 14 : 12, weight: .bold))
                 .foregroundStyle(mode.tint == RV.Color.ink ? RV.Color.onInk : .white)
         }

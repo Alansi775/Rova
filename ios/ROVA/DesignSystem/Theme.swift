@@ -96,12 +96,10 @@ enum TransitMode: Sendable {
         }
     }
 
-    var symbol: String {
-        switch self {
-        case .metrobus: return "tram.fill"
-        case .bus:      return "bus.fill"
-        }
-    }
+    /// Both are buses, and the Metrobüs is drawn as one. It runs on tyres in
+    /// a bus lane; a tram or metro glyph says something untrue about it. The
+    /// colour carries the distinction instead.
+    var symbol: String { "bus.fill" }
 
     var label: String {
         switch self {

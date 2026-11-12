@@ -387,6 +387,11 @@ final class JourneyEngine: ObservableObject {
         return (vehicles[ctx.line] ?? []).filter { v in
             // Whatever else the filters say, the bus you are on stays.
             if v.doorNo == followed { return true }
+            // A vehicle that has not reported for a quarter of an hour is not
+            // traffic. İETT keeps listing buses that finished their shift —
+            // 112 of them on 34BZ at 02:07, median fix 2.5 hours old — and
+            // drawing those fills the map with vehicles that will never move.
+            guard v.fixAge <= ETAEngine.liveFixAgeLimit else { return false }
             // The same line runs back the other way along the same road, and
             // those buses snapped onto this route perfectly — which is how a
             // bus that was driving *away* appeared on the map as one coming
