@@ -1,0 +1,27 @@
+# secrets — never commit
+.env
+*.env
+!.env.example
+
+# node
+node_modules/
+dist/
+*.log
+
+# xcode (project is generated from project.yml by xcodegen)
+ios/ROVA.xcodeproj/
+ios/*.xcworkspace/
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+
+# large raw downloads — regenerate with tools/build_bundle.py
+data/gtfs-iett/
+data/raw/
+
+# macOS
+.DS_Store
+
+# Local backend credentials — never committed
+ios/ROVA/Resources/backend.json

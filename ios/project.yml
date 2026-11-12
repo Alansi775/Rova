@@ -1,0 +1,58 @@
+name: ROVA
+options:
+  bundleIdPrefix: com.msgone
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: 7UM534HHV5
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_STRICT_CONCURRENCY: minimal
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+targets:
+  ROVA:
+    type: application
+    platform: iOS
+    sources:
+      - path: ROVA
+        excludes: ["Resources/rova-transit.sqlite"]
+      - path: ROVA/Resources/rova-transit.sqlite
+        type: file
+        buildPhase: resources
+    dependencies:
+      - sdk: libsqlite3.tbd
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.msgone.rova
+        PRODUCT_NAME: ROVA
+        INFOPLIST_FILE: ROVA/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SUPPORTS_MACCATALYST: NO
+        IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+  ROVATests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [ROVATests]
+    dependencies:
+      - target: ROVA
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.msgone.rova.tests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  ROVA:
+    build:
+      targets: { ROVA: all, ROVATests: [test] }
+    test:
+      targets: [ROVATests]
+      environmentVariables:
+        - variable: ROVA_LIVE_TESTS
+          value: "1"
+          isEnabled: false
+    run: {}

@@ -1,0 +1,59 @@
+# ROVA — full stack for a server deployment.
+#
+#   export POSTGRES_PASSWORD=$(openssl rand -hex 24)
+#   cp backend/.env.example backend/.env    # then set ROVA_DEVICE_TOKEN
+#   docker compose up -d --build
+#   docker compose exec api node dist/db/migrate.js
+#   docker compose exec api node dist/db/seed.js /app/bundle/rova-transit.sqlite
+#   curl localhost:3111/health/detail
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    # PostGIS is not required by the current code (see ARCHITECTURE.md), but
+    # the image costs nothing and leaves the door open.
+    environment:
+      POSTGRES_DB: rova
+      POSTGRES_USER: rova
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in your environment}
+    volumes:
+      - rova-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rova -d rova"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  cache:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build: ./backend
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgres://rova:${POSTGRES_PASSWORD}@db:5432/rova
+      REDIS_URL: redis://cache:6379
+      PORT: "3111"
+    volumes:
+      # the transit bundle, so the seed script can run inside the container
+      - ./ios/ROVA/Resources:/app/bundle:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_started
+    ports:
+      # bound to loopback: put nginx in front for TLS (see deploy/nginx-rova.conf)
+      - "127.0.0.1:3111:3111"
+    restart: unless-stopped
+
+volumes:
+  rova-db:
