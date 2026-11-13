@@ -13,6 +13,11 @@ struct JourneyMapView: View {
     @EnvironmentObject var motion: VehicleAnimator
 
     @Binding var camera: MapCameraPosition
+    /// Reports the visible region so the caller can follow a vehicle without
+    /// overriding the zoom the user has chosen.
+    var onCameraChange: ((CLLocationCoordinate2D, MKCoordinateSpan) -> Void)? = nil
+    /// True while the user is manipulating the map; following pauses then.
+    var onInteractionChange: ((Bool) -> Void)? = nil
     var onTapMap: (CLLocationCoordinate2D) -> Void
 
     private var journey: LiveJourney? { engine.focusedJourney }
@@ -98,6 +103,14 @@ struct JourneyMapView: View {
             .onTapGesture { pt in
                 if let c = proxy.convert(pt, from: .local) { onTapMap(c) }
             }
+            .onMapCameraChange(frequency: .continuous) { ctx in
+                onCameraChange?(ctx.region.center, ctx.region.span)
+            }
+            // While a finger is on the map, nothing moves it but the finger.
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { _ in onInteractionChange?(true) }
+                    .onEnded { _ in onInteractionChange?(false) })
         }
         .onChange(of: journey?.option.id) { _, _ in requestWalks() }
         .onChange(of: engine.tripDoorNo) { _, trip in
@@ -190,6 +203,7 @@ struct VehicleMarker: View {
 
     private var state: DataState { .forFix(age: display.fixAge) }
     private var moving: Bool { (display.speedKmh ?? 0) > 3 }
+    private var mode: TransitMode { .of(line: display.vehicle.lineCode) }
 
     var body: some View {
         ZStack {
@@ -204,14 +218,19 @@ struct VehicleMarker: View {
                 .rotationEffect(.degrees(display.bearing), anchor: .center)
                 .opacity(moving ? 1 : 0.35)
 
+            // The body carries the *mode*, so a Metrobüs is recognisable at a
+            // glance. Freshness is the ring around it — two different facts,
+            // two different channels, neither able to be mistaken for the
+            // other. Colouring the body by freshness made every vehicle look
+            // alike and hid which system you were actually looking at.
             Circle()
-                .fill(state.tint)
+                .fill(mode.tint)
                 .frame(width: tracked ? 32 : 27, height: tracked ? 32 : 27)
-                .overlay(Circle().strokeBorder(.white.opacity(0.92), lineWidth: 2.5))
+                .overlay(Circle().strokeBorder(state.tint, lineWidth: 3))
                 .shadow(color: .black.opacity(0.3), radius: 5, y: 2)
             Image(systemName: moving ? "bus.fill" : "bus")
                 .font(.system(size: tracked ? 14 : 12, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(mode.tint == RV.Color.ink ? RV.Color.onInk : .white)
         }
         .frame(width: 56, height: 56)
         .contentShape(Circle())

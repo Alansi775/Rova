@@ -210,6 +210,76 @@ final class ETATests: XCTestCase {
                 lastFix: Date().addingTimeInterval(-ageSeconds), nearStopCode: nil)
     }
 
+    /// The "0–47 min" range, and the false "leave now" it produced.
+    ///
+    /// `leaveInSeconds` is measured against the early end of the range, so a
+    /// lower bound of zero tells someone to leave immediately for a bus that
+    /// is kilometres away. The early end must be bounded by the road.
+    func testEarlyEndOfRangeIsBoundedByDistance() throws {
+        let (p, stops, shape) = corridor()
+        guard stops.count > 14, shape.count > 2 else {
+            throw XCTSkip("pattern too short")
+        }
+        let v = vehicle(at: 0, shape: shape, pattern: p.id)
+        guard let eta = engine.estimate(vehicle: v, pattern: p,
+                                        stopIndex: 13, history: nil),
+              let remaining = eta.remainingMetres, remaining > 500 else {
+            throw XCTSkip("no distant estimate available in this corridor")
+        }
+
+        // Soonest physically possible: remaining distance at the fastest a
+        // city bus could conceivably average.
+        let floorMinutes = remaining / engine.maxConceivableSpeed / 60
+        XCTAssertGreaterThanOrEqual(
+            eta.rangeMinutes.lowerBound, floorMinutes - 0.01,
+            "a bus \(Int(remaining)) m away cannot arrive in \(eta.rangeMinutes.lowerBound) min")
+        XCTAssertGreaterThan(eta.rangeMinutes.lowerBound, 0,
+                             "a distant bus must never show an early bound of zero")
+    }
+
+    /// The headline must always lie inside its own range.
+    ///
+    /// A screenshot showed "8 min" above "21–293 min": a figure outside its
+    /// own interval. That is worse than either number alone, because it tells
+    /// the reader the app is not internally consistent.
+    func testPredictionAlwaysLiesInsideItsOwnRange() {
+        let (p, stops, shape) = corridor()
+        guard stops.count > 16 else { return }
+        for ageSeconds in [0.0, 60, 200, 400, 800] {
+            for target in [2, 6, 11, 15] {
+                let v = vehicle(at: 0, shape: shape, ageSeconds: ageSeconds, pattern: p.id)
+                guard let e = engine.estimate(vehicle: v, pattern: p,
+                                              stopIndex: target, history: nil) else { continue }
+                XCTAssertGreaterThanOrEqual(
+                    e.predictedMinutes, e.rangeMinutes.lowerBound - 0.001,
+                    "age \(ageSeconds)s, stop \(target): "
+                    + "\(e.predictedMinutes) is below its range \(e.rangeMinutes)")
+                XCTAssertLessThanOrEqual(
+                    e.predictedMinutes, e.rangeMinutes.upperBound + 0.001,
+                    "age \(ageSeconds)s, stop \(target): "
+                    + "\(e.predictedMinutes) is above its range \(e.rangeMinutes)")
+            }
+        }
+    }
+
+    /// İETT keeps publishing the last position of buses that finished hours
+    /// ago. One of those must never be described as approaching.
+    func testFixFromHoursAgoProducesNoEstimate() {
+        let (p, stops, shape) = corridor()
+        guard stops.count > 6 else { return }
+        // 466 minutes: the age shown on screen beside an "8 min" arrival.
+        let dead = vehicle(at: 0, shape: shape, ageSeconds: 466 * 60, pattern: p.id)
+        XCTAssertNil(engine.estimate(vehicle: dead, pattern: p, stopIndex: 5, history: nil),
+                     "a fix 466 minutes old is not evidence about where a bus is now")
+
+        // And the boundary is where it says it is.
+        let justInside = vehicle(at: 0, shape: shape,
+                                 ageSeconds: engine.maxUsableFixAge - 30, pattern: p.id)
+        XCTAssertNotNil(engine.estimate(vehicle: justInside, pattern: p,
+                                        stopIndex: 5, history: nil),
+                        "a fix inside the limit must still be usable")
+    }
+
     func testEstimateUsesScheduledRunningTime() {
         let (p, stops, shape) = corridor()
         let v = vehicle(at: 2, shape: shape, pattern: p.id)
@@ -311,6 +381,150 @@ final class ETATests: XCTestCase {
 }
 
 // MARK: - Formatting
+
+final class MetroNetworkTests: XCTestCase {
+
+    /// Colours come from Metro İstanbul's own field, parsed as published.
+    /// M2's green and M1A's red are the shades İstanbul signs those lines
+    /// with, taken from the service rather than from memory.
+    func testParsesPublishedLineColours() {
+        let json = """
+        {"Success":true,"Error":null,"Data":[
+          {"Id":1,"Name":"M2","Color":{"Color_R":"0","Color_G":"153","Color_B":"68"},
+           "FirstTime":"05:57","LastTime":"00:00"},
+          {"Id":2,"Name":"M1A","Color":{"Color_R":"238","Color_G":"49","Color_B":"36"},
+           "FirstTime":"05:50","LastTime":"00:00"}]}
+        """
+        let lines = MetroNetwork.decodeLinesForTesting(json)
+        XCTAssertEqual(lines?.count, 2)
+        let m2 = lines?.first { $0.name == "M2" }
+        XCTAssertEqual(m2?.colourR, 0)
+        XCTAssertEqual(m2?.colourG, 153)
+        XCTAssertEqual(m2?.colourB, 68)
+        XCTAssertEqual(m2?.firstTime, "05:57")
+        let m1a = lines?.first { $0.name == "M1A" }
+        XCTAssertEqual(m1a?.colourR, 238)
+    }
+
+    /// A line with no published colour must not be given an invented one.
+    func testMissingColourIsNotInvented() {
+        let json = """
+        {"Success":true,"Error":null,"Data":[
+          {"Id":9,"Name":"M99","Color":null,"FirstTime":null,"LastTime":null}]}
+        """
+        let lines = MetroNetwork.decodeLinesForTesting(json)
+        XCTAssertEqual(lines?.first?.colourR, 0)
+        XCTAssertEqual(lines?.first?.colourG, 0)
+        XCTAssertEqual(lines?.first?.colourB, 0)
+    }
+}
+
+final class CountdownTests: XCTestCase {
+
+    private func eta(_ door: String, minutes: Double) -> ETA {
+        ETA(vehicleDoorNo: door, lineCode: "146", patternId: "p",
+            predictedMinutes: minutes,
+            rangeMinutes: max(0, minutes - 1)...(minutes + 1),
+            lastFixAge: 30, confidence: .high, lowConfidenceReason: nil,
+            state: .liveGPS(age: 30), remainingMetres: minutes * 400,
+            stopsAway: Int(minutes / 2) + 1)
+    }
+
+    private func journey(subject: String?, etas: [ETA], walk: Int) -> LiveJourney {
+        let board = Stop(code: "S1", name: "Board", lat: 41.0, lon: 28.7,
+                         district: "D", direction: "G", smart: false)
+        let leg = JourneyLeg(kind: .bus, seconds: 600, distanceMetres: 3000,
+                             lineCode: "146", patternId: "p", headsign: "H",
+                             boardStop: board, alightStop: nil,
+                             intermediateStops: 4, shape: [])
+        let walkLeg = JourneyLeg(kind: .walk, seconds: walk, distanceMetres: 500,
+                                 lineCode: nil, patternId: nil, headsign: nil,
+                                 boardStop: nil, alightStop: nil,
+                                 intermediateStops: 0, shape: [])
+        let opt = JourneyOption(legs: [walkLeg, leg])
+        var j = LiveJourney(option: opt, nearestETA: etas.first,
+                            alternatives: Array(etas.dropFirst()))
+        j.subjectDoorNo = subject
+        return j
+    }
+
+    /// The "2 minutes becomes an hour" failure.
+    ///
+    /// Watching a bus approach until it is nearer than your walk used to drop
+    /// it silently and promote the next one, an hour behind. The countdown
+    /// must stay on the bus it was counting.
+    func testCountdownStaysOnItsBusEvenWhenItBecomesUnreachable() {
+        let close = eta("A", minutes: 2)       // 2 min away
+        let later = eta("B", minutes: 62)      // an hour behind
+        let j = journey(subject: "A", etas: [close, later], walk: 11 * 60)
+
+        XCTAssertEqual(j.eta?.vehicleDoorNo, "A",
+                       "the countdown must not jump to a different bus")
+        XCTAssertFalse(j.isReachable, "an 11 minute walk cannot catch a 2 minute bus")
+        XCTAssertEqual(j.nextReachable?.vehicleDoorNo, "B",
+                       "and it must offer the one you can still catch")
+    }
+
+    /// With no subject yet, the soonest reachable bus is chosen.
+    func testWithoutASubjectThePickIsTheSoonestReachable() {
+        let close = eta("A", minutes: 2)
+        let later = eta("B", minutes: 62)
+        let j = journey(subject: nil, etas: [close, later], walk: 11 * 60)
+        XCTAssertEqual(j.eta?.vehicleDoorNo, "B")
+        XCTAssertTrue(j.isReachable)
+    }
+
+    /// A bus you can comfortably reach stays reachable.
+    func testReachableBusIsReported() {
+        let j = journey(subject: "A", etas: [eta("A", minutes: 20)], walk: 5 * 60)
+        XCTAssertEqual(j.eta?.vehicleDoorNo, "A")
+        XCTAssertTrue(j.isReachable)
+        XCTAssertNil(j.nextReachable)
+    }
+}
+
+@MainActor
+final class ModeTests: XCTestCase {
+
+    /// Every 34* line in the bundled network is a Metrobüs corridor, and the
+    /// mode rule is checked against the real data rather than a hand-written
+    /// list that could drift away from it.
+    func testEveryThirtyFourLineIsMetrobus() {
+        let store = TransitStore.shared
+        let codes = store.patterns.values.map(\.line).filter { $0.hasPrefix("34") }
+        XCTAssertFalse(codes.isEmpty, "the bundle must contain Metrobüs lines")
+        for c in Set(codes) {
+            XCTAssertEqual(TransitMode.of(line: c), .metrobus,
+                           "\(c) should be recognised as Metrobüs")
+        }
+    }
+
+    func testOrdinaryLinesAreNotMetrobus() {
+        for c in ["146", "142", "76O", "HS2", "144A", "340"] {
+            XCTAssertEqual(TransitMode.of(line: c), .bus,
+                           "\(c) must not be treated as Metrobüs")
+        }
+    }
+
+    /// The trap that made the app look like it was lying: a stop named after
+    /// the Metrobüs that no Metrobüs calls at. The app must be able to state
+    /// what really serves a stop.
+    func testStopNamedAfterTheMetrobusIsNotServedByIt() {
+        let store = TransitStore.shared
+        let lines = store.linesCalling(at: "101452")   // "AVCILAR METROBÜS"
+        XCTAssertFalse(lines.isEmpty, "the stop must be served by something")
+        XCTAssertFalse(lines.contains { TransitMode.of(line: $0) == .metrobus },
+                       "no Metrobüs calls at 101452 — the name is misleading, "
+                       + "which is exactly why the lines are shown in search")
+    }
+
+    /// And the real platforms are served by it.
+    func testRealMetrobusPlatformIsServedByMetrobus() {
+        let lines = TransitStore.shared.linesCalling(at: "900332")
+        XCTAssertTrue(lines.contains { TransitMode.of(line: $0) == .metrobus },
+                      "900332 is a Metrobüs platform; got \(lines)")
+    }
+}
 
 final class FormatTests: XCTestCase {
     func testDurations() {

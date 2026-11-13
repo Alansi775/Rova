@@ -118,8 +118,25 @@ describe('ETA engine', () => {
   it('widens the range as the fix ages', () => {
     const fresh = eta.estimate(fixAt(2), 'L_D_0', 'S5', null, NOW)!;
     const stale = eta.estimate(fixAt(2, 150), 'L_D_0', 'S5', null, NOW)!;
-    const span = (r: any) => r.arrivalRangeMinutes.maximum - r.arrivalRangeMinutes.minimum;
-    expect(span(stale)).toBeGreaterThan(span(fresh));
+    // Uncertainty shows in the *late* end. The early end is pinned by the
+    // road — a bus cannot arrive sooner than the distance allows however
+    // stale its last fix — so a widening span is the wrong invariant now
+    // that the floor is enforced. What must hold is that a stale fix never
+    // claims a tighter upper bound, and that the estimate stays inside its
+    // own range.
+    // The invariant that actually protects the reader: a stale estimate must
+    // still cover the possibility that the bus has not moved since its last
+    // fix. If the range excludes that, the app has quietly assumed progress
+    // it never observed — which is how "leave now" is followed by the bus
+    // retreating and five more minutes.
+    expect(stale.arrivalRangeMinutes.maximum)
+      .toBeGreaterThanOrEqual(fresh.predictedArrivalMinutes - 0.001);
+    for (const r of [fresh, stale]) {
+      expect(r.predictedArrivalMinutes)
+        .toBeGreaterThanOrEqual(r.arrivalRangeMinutes.minimum - 0.001);
+      expect(r.predictedArrivalMinutes)
+        .toBeLessThanOrEqual(r.arrivalRangeMinutes.maximum + 0.001);
+    }
   });
 
   it('returns null when the bus has already passed the stop', () => {
@@ -170,5 +187,39 @@ describe('ETA engine', () => {
       STOPS.map((s) => s.offset_sec),
     );
     expect(r).toBeNull();
+  });
+});
+
+/**
+ * The sampler decides *what* gets measured, so its selection rules matter as
+ * much as the engine's arithmetic: a sampler that quietly skips hard cases
+ * would produce a flattering accuracy figure from real data.
+ */
+describe('prediction sampler selection rules', () => {
+  const { SamplerService } = require('../src/predictions/sampler.service');
+
+  it('spreads predictions across horizons rather than sampling one distance', () => {
+    expect(SamplerService.STOPS_AHEAD.length).toBeGreaterThanOrEqual(3);
+    const sorted = [...SamplerService.STOPS_AHEAD].sort((a: number, b: number) => a - b);
+    expect(sorted[0]).toBeLessThanOrEqual(3);
+    expect(sorted[sorted.length - 1]).toBeGreaterThanOrEqual(10);
+    expect(SamplerService.STOPS_AHEAD).toEqual(sorted);
+  });
+
+  it('dedupes far enough apart that polling cannot flood one arrival', () => {
+    expect(SamplerService.DEDUPE_MS).toBeGreaterThanOrEqual(60_000);
+  });
+});
+
+
+describe('dead fixes', () => {
+  // İETT keeps publishing the last position of buses that finished hours
+  // ago. One of those must never be described as approaching.
+  it('refuses to estimate from a fix hours old', () => {
+    expect(eta.estimate(fixAt(2, 466 * 60), 'L_D_0', 'S5', null, NOW)).toBeNull();
+  });
+
+  it('still estimates from a fix inside the limit', () => {
+    expect(eta.estimate(fixAt(2, 600), 'L_D_0', 'S5', null, NOW)).not.toBeNull();
   });
 });

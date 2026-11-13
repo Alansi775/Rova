@@ -42,17 +42,60 @@ export class IettClient {
     process.env.IETT_FLEET_URL ?? 'https://api.ibb.gov.tr/iett/FiloDurum/SeferGerceklesme.asmx';
   private readonly networkUrl =
     process.env.IETT_NETWORK_URL ?? 'https://api.ibb.gov.tr/iett/UlasimAnaVeri/HatDurakGuzergah.asmx';
-  readonly budget = new RequestBudget(Number(process.env.IETT_HOURLY_LIMIT ?? 80));
+  /**
+   * İETT publishes a ceiling of about 100 requests an hour per caller. Running
+   * at 90 left no room for the retries above, and none for a manual probe or a
+   * restart that re-reads a few lines. 75 is a ceiling with headroom, which is
+   * the only kind worth having: the cost of being slightly slower is a fix one
+   * minute older, and the cost of being over is every line going dark at once.
+   */
+  readonly budget = new RequestBudget(Number(process.env.IETT_HOURLY_LIMIT ?? 75));
 
-  private backoffUntil = 0;
-  private failures = 0;
+  /**
+   * Backoff is deliberately split in two, because the two failure modes have
+   * different blast radii and conflating them silenced the whole app.
+   *
+   * `quotaBackoffUntil` is global and correct: "Policy Falsified" is Layer7
+   * refusing this *IP address*, so no line can be fetched and trying another
+   * one only digs deeper.
+   *
+   * `lineBackoff` is per line, and replaces a global one that was wrong. The
+   * fleet service returns a sporadic HTTP 503 for a single line while serving
+   * the rest perfectly. The old code let that one failure stop every line for
+   * up to fifteen minutes, so the whole map froze on one line's hiccup. The
+   * ingestion log shows the amplification plainly: in the 10:00 hour on
+   * 2026-11-13, 17 real 503s produced 107 further attempts refused by our own
+   * backoff — six fabricated failures for every genuine one, and ~40 minutes
+   * where not a single request left the machine while most lines would have
+   * answered. That was ours, not İETT's.
+   */
+  private quotaBackoffUntil = 0;
+  private lineBackoff = new Map<string, { until: number; failures: number }>();
 
-  get isBackingOff(): boolean { return Date.now() < this.backoffUntil; }
-  get consecutiveFailures(): number { return this.failures; }
+  /** Longest a single line is rested after transport failures. */
+  static readonly MAX_LINE_BACKOFF_MS = 5 * 60_000;
+
+  get isBackingOff(): boolean { return Date.now() < this.quotaBackoffUntil; }
+  backoffFor(lineCode: string): number {
+    const b = this.lineBackoff.get(lineCode);
+    return b ? Math.max(0, b.until - Date.now()) : 0;
+  }
+  get consecutiveFailures(): number {
+    let n = 0;
+    for (const b of this.lineBackoff.values()) n = Math.max(n, b.failures);
+    return n;
+  }
 
   /** Live vehicle positions for one line code. */
   async vehicles(lineCode: string): Promise<FetchResult> {
-    if (this.isBackingOff) throw new Error('backing off after repeated İETT failures');
+    if (this.isBackingOff) {
+      throw new Error('İETT quota exhausted for this address — backing off');
+    }
+    if (this.backoffFor(lineCode) > 0) {
+      throw new Error(
+        `backing off ${lineCode} for ${Math.round(this.backoffFor(lineCode) / 1000)}s ` +
+        'after repeated failures on this line');
+    }
     if (!this.budget.consume()) throw new Error('hourly İETT request budget exhausted');
 
     const body = soapEnvelope('GetHatOtoKonum_json', `<tns:HatKodu>${escapeXml(lineCode)}</tns:HatKodu>`);
@@ -60,7 +103,16 @@ export class IettClient {
 
     // The İETT gateway returns a sporadic 503 for an otherwise valid request,
     // so one transient failure is retried before the line is marked unhealthy.
-    // The retry does not consume a second budget slot.
+    //
+    // The retry *is* charged to the budget. It used to be free, on the
+    // reasoning that a failed request is not a served request — but İETT
+    // counts HTTP calls at its gateway, not our successes, and the invisible
+    // second call is exactly what broke us on 2026-11-13: running pinned at
+    // our 90/hour ceiling against İETT's ~100/hour limit, a burst of 17 503s
+    // in one hour fired 17 uncounted retries, pushed the real rate past 100,
+    // and Layer7 answered "Policy Falsified" — turning a patch of transient
+    // faults into a flat lockout of every line. A budget that does not count
+    // every call it makes is not a budget.
     let text: string | null = null;
     let lastError = '';
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -78,13 +130,18 @@ export class IettClient {
         const payloadText = await res.text();
         if (!res.ok) {
           lastError = extract(payloadText, 'faultstring') ?? `HTTP ${res.status}`;
-          // Layer7 answers an over-quota caller with "Policy Falsified".
-          if (/policy falsified/i.test(lastError)) {
-            this.backoffUntil = Date.now() + 10 * 60_000;
-            this.failures += 1;
+          // "Policy Falsified" is Layer7's generic assertion failure, not a
+          // quota message as this code once assumed. On 2026-11-13 we logged
+          // it while making 40 calls an hour against a ~100 ceiling — and a
+          // minute later the gateway was returning a bare HTML 503 for the
+          // Metro endpoint too, so the whole of api.ibb.gov.tr was down. A
+          // quota diagnosis there would have been a confident lie in our own
+          // health output. Only an explicit quota assertion is treated as one.
+          if (/policy falsified/i.test(lastError) && /quota|rate|throttl/i.test(payloadText)) {
+            this.quotaBackoffUntil = Date.now() + 10 * 60_000;
             throw new Error('İETT rate limit reached (Policy Falsified) — backing off 10 min');
           }
-          if (res.status >= 500 && attempt === 0) {
+          if (res.status >= 500 && attempt === 0 && this.budget.consume()) {
             await new Promise((r) => setTimeout(r, 1500));
             continue;
           }
@@ -94,22 +151,30 @@ export class IettClient {
         break;
       } catch (e: any) {
         lastError = e.message;
-        if (attempt === 0) { await new Promise((r) => setTimeout(r, 1500)); continue; }
-        this.noteFailure();
+        if (attempt === 0 && this.budget.consume()) {
+          await new Promise((r) => setTimeout(r, 1500));
+          continue;
+        }
+        this.noteFailure(lineCode);
         throw new Error(`İETT fleet service: ${lastError}`);
       }
     }
     if (text === null) {
-      this.noteFailure();
+      this.noteFailure(lineCode);
       throw new Error(`İETT fleet service: ${lastError}`);
     }
 
     const payload = extract(text, 'GetHatOtoKonum_jsonResult');
-    if (payload === null) { this.noteFailure(); throw new Error('İETT returned no result element'); }
+    if (payload === null) {
+      this.noteFailure(lineCode);
+      throw new Error('İETT returned no result element');
+    }
 
     const { vehicles, rejected } = parseVehicles(payload, lineCode);
-    this.failures = 0;
-    this.backoffUntil = 0;
+    // A line that answers is healthy again; its own history is cleared, and
+    // no other line's state is touched.
+    this.lineBackoff.delete(lineCode);
+    this.quotaBackoffUntil = 0;
     return { vehicles, rejected, latencyMs: Date.now() - started };
   }
 
@@ -138,11 +203,15 @@ export class IettClient {
     return payload ? JSON.parse(payload) : [];
   }
 
-  private noteFailure() {
-    this.failures += 1;
-    const wait = Math.min(15 * 60_000, 30_000 * 2 ** Math.min(5, this.failures - 1));
-    this.backoffUntil = Date.now() + wait;
-    this.log.warn(`İETT failure #${this.failures}; backing off ${Math.round(wait / 1000)}s`);
+  private noteFailure(lineCode: string) {
+    const prev = this.lineBackoff.get(lineCode);
+    const failures = (prev?.failures ?? 0) + 1;
+    const wait = Math.min(
+      IettClient.MAX_LINE_BACKOFF_MS,
+      20_000 * 2 ** Math.min(4, failures - 1));
+    this.lineBackoff.set(lineCode, { until: Date.now() + wait, failures });
+    this.log.warn(
+      `İETT failure #${failures} on ${lineCode}; resting that line ${Math.round(wait / 1000)}s`);
   }
 }
 

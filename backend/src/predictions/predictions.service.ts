@@ -69,8 +69,10 @@ export class PredictionsService {
     const where = lineCode ? 'AND line_code = $1' : '';
     const params = lineCode ? [lineCode] : [];
     const rows = await this.db.query<{ error_seconds: number; fix_age_sec: number;
-                                       line_code: string; confidence: string }>(
-      `SELECT error_seconds, fix_age_sec, line_code, confidence
+                                       line_code: string; confidence: string;
+                                       horizon_sec: number }>(
+      `SELECT error_seconds, fix_age_sec, line_code, confidence,
+              EXTRACT(EPOCH FROM (predicted_arrival - predicted_at)) AS horizon_sec
        FROM eta_predictions
        WHERE actual_arrival IS NOT NULL ${where}`, params);
 
@@ -84,6 +86,8 @@ export class PredictionsService {
         within5MinutesPercent: null,
         gpsFreshnessSeconds: null,
         byLine: {},
+        byHorizon: {},
+        byConfidence: {},
       };
     }
 
@@ -104,6 +108,42 @@ export class PredictionsService {
       };
     }
 
+    // Error by horizon. A 30-minute estimate being wrong by 3 minutes is a
+    // different thing from a 3-minute estimate being wrong by 3 minutes, and
+    // one figure averaged over both describes neither.
+    const horizonBands: [string, number, number][] = [
+      ['under5min', 0, 300],
+      ['5to15min', 300, 900],
+      ['over15min', 900, Infinity],
+    ];
+    const byHorizon: Record<string, any> = {};
+    for (const [name, lo, hi] of horizonBands) {
+      const sub = rows
+        .filter((r) => { const h = Number(r.horizon_sec ?? 0); return h >= lo && h < hi; })
+        .map((r) => Math.abs(Number(r.error_seconds))).sort((a, b) => a - b);
+      byHorizon[name] = sub.length ? {
+        sampleSize: sub.length,
+        medianAbsoluteErrorSeconds: Math.round(sub[Math.floor(sub.length / 2)]),
+        within2MinutesPercent:
+          Math.round((sub.filter((e) => e <= 120).length / sub.length) * 1000) / 10,
+      } : { sampleSize: 0 };
+    }
+
+    // Error by confidence band. This is the one that can falsify the app's
+    // own labelling: if "high" is not measurably better than "low", then the
+    // badge is decoration and should be removed rather than defended.
+    const byConfidence: Record<string, any> = {};
+    for (const band of ['high', 'medium', 'low']) {
+      const sub = rows.filter((r) => r.confidence === band)
+        .map((r) => Math.abs(Number(r.error_seconds))).sort((a, b) => a - b);
+      byConfidence[band] = sub.length ? {
+        sampleSize: sub.length,
+        medianAbsoluteErrorSeconds: Math.round(sub[Math.floor(sub.length / 2)]),
+        within2MinutesPercent:
+          Math.round((sub.filter((e) => e <= 120).length / sub.length) * 1000) / 10,
+      } : { sampleSize: 0 };
+    }
+
     return {
       sampleSize: abs.length,
       meanAbsoluteErrorSeconds: Math.round(abs.reduce((a, b) => a + b, 0) / abs.length),
@@ -115,6 +155,8 @@ export class PredictionsService {
         p90: Math.round(ages[Math.floor(ages.length * 0.9)]),
       },
       byLine,
+      byHorizon,
+      byConfidence,
     };
   }
 }

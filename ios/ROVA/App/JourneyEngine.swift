@@ -96,10 +96,23 @@ final class JourneyEngine: ObservableObject {
     /// ordering that matters: walk + wait (live if known, timetable otherwise)
     /// + ride. A faster bus you have to wait 40 minutes for is not the best
     /// option at 5 a.m.
+    /// Where the current plan was made from, so the walk to the boarding stop
+    /// can be measured rather than estimated.
+    private(set) var plannedOrigin: CLLocationCoordinate2D?
+
     var journeys: [LiveJourney] {
         let all = options.map { o -> LiveJourney in
             let l = live[o.id]
-            return LiveJourney(option: o, nearestETA: l?.eta, alternatives: l?.alternatives ?? [])
+            var j = LiveJourney(option: o, nearestETA: l?.eta, alternatives: l?.alternatives ?? [])
+            j.subjectDoorNo = countdownSubject[o.id]
+            // Measured pedestrian routing for the walk that drives "leave
+            // now". Nil until Apple answers; the estimate stands meanwhile,
+            // labelled as an estimate.
+            if let origin = plannedOrigin,
+               let board = o.busLegs.first?.boardStop {
+                j.measuredWalk = WalkTimes.shared.walk(from: origin, to: board)
+            }
+            return j
         }
         return all.sorted { doorToDoor($0) < doorToDoor($1) }
     }
@@ -168,6 +181,7 @@ final class JourneyEngine: ObservableObject {
         // user is in the middle of. While a trip is running, only an explicit
         // action may replan.
         if tripDoorNo != nil && !force { return }
+        plannedOrigin = from
         isPlanning = true
         let p = planner
         let result = await Task.detached(priority: .userInitiated) {
@@ -175,6 +189,8 @@ final class JourneyEngine: ObservableObject {
         }.value
         options = result
         live = [:]
+        countdownSubject = [:]
+        countdownChanged = []
         departureCache = [:]
         if let sel = selected, !result.contains(where: { $0.id == sel.id }) { selected = nil }
         isPlanning = false
@@ -355,7 +371,47 @@ final class JourneyEngine: ObservableObject {
             next[o.id] = (cands.first?.eta, cands.dropFirst().prefix(4).map(\.eta))
         }
         live = next
+        holdCountdownSubjects()
         refreshMotion()
+    }
+
+    /// Which vehicle each journey's countdown is about.
+    ///
+    /// Kept across refreshes so the headline cannot silently jump from one
+    /// bus to another. A subject is released only when its vehicle is no
+    /// longer reporting an arrival at all — it has passed the stop, or gone
+    /// quiet past the usable age — and the replacement is then the soonest
+    /// bus that can still be reached.
+    private var countdownSubject: [UUID: String] = [:]
+
+    /// Journeys whose countdown changed to a different vehicle on the last
+    /// refresh, so the screen can say the previous one is gone rather than
+    /// quietly showing a different number.
+    private(set) var countdownChanged: Set<UUID> = []
+
+    private func holdCountdownSubjects() {
+        var changed: Set<UUID> = []
+        for o in options {
+            let pool = ([live[o.id]?.0].compactMap { $0 } + (live[o.id]?.1 ?? []))
+            let doors = Set(pool.compactMap(\.vehicleDoorNo))
+
+            if let current = countdownSubject[o.id], doors.contains(current) {
+                continue                      // still approaching: keep counting it
+            }
+            // Gone. Choose the soonest one that can still be reached, and
+            // record that the subject moved.
+            var j = LiveJourney(option: o, nearestETA: live[o.id]?.0,
+                                alternatives: live[o.id]?.1 ?? [])
+            if let origin = plannedOrigin, let board = o.busLegs.first?.boardStop {
+                j.measuredWalk = WalkTimes.shared.walk(from: origin, to: board)
+            }
+            let replacement = j.firstCatchable?.vehicleDoorNo ?? j.allETAs.first?.vehicleDoorNo
+            if countdownSubject[o.id] != nil, replacement != countdownSubject[o.id] {
+                changed.insert(o.id)
+            }
+            countdownSubject[o.id] = replacement
+        }
+        countdownChanged = changed
     }
 
     // MARK: vehicle lookup
@@ -374,12 +430,17 @@ final class JourneyEngine: ObservableObject {
         return (vehicles[ctx.line] ?? []).filter { v in
             // Whatever else the filters say, the bus you are on stays.
             if v.doorNo == followed { return true }
+            // A vehicle that has not reported for a quarter of an hour is not
+            // traffic. İETT keeps listing buses that finished their shift —
+            // 112 of them on 34BZ at 02:07, median fix 2.5 hours old — and
+            // drawing those fills the map with vehicles that will never move.
+            guard v.fixAge <= ETAEngine.liveFixAgeLimit else { return false }
             // The same line runs back the other way along the same road, and
             // those buses snapped onto this route perfectly — which is how a
             // bus that was driving *away* appeared on the map as one coming
             // towards you. A vehicle is only drawn on this route if it says it
             // is running this güzergah.
-            guard v.patternId.isEmpty || v.patternId == ctx.patternId else { return false }
+            guard v.patternId.isEmpty || ctx.servingPatterns.contains(v.patternId) else { return false }
             guard let snap = Geo.snap(v.coordinate, to: ctx.shape) else { return false }
             let limit = onRouteDoors.contains(v.doorNo) ? 900.0 : 450.0
             guard snap.offset < limit else { return false }
@@ -394,6 +455,10 @@ final class JourneyEngine: ObservableObject {
         let shape: [CLLocationCoordinate2D]
         let boardAlong: Double
         let boardStop: Stop
+        /// Every güzergah of this line that calls at the boarding stop and
+        /// then the alighting stop, in that order — in other words, every
+        /// variant that can actually make this journey.
+        let servingPatterns: Set<String>
     }
 
     /// Geometry of the bus leg currently on screen.
@@ -406,9 +471,33 @@ final class JourneyEngine: ObservableObject {
         let stops = store.patternStops(pid)
         let boardIdx = stops.firstIndex { $0.stopCode == board.code } ?? 0
         let cum = Geo.cumulative(shape)
+
+        // A line runs several güzergah variants, and the timetable may pick
+        // one that nothing is driving right now. Requiring an exact match
+        // made every live bus invisible: on 34C the planner chose
+        // 34C_D_D9055, which had zero vehicles, while 142 were running other
+        // variants of the same line that call at both of these stops.
+        //
+        // So the test is what the vehicle's own güzergah does, not what it is
+        // called: does it stop here, and later there? That is read from the
+        // bundle, so it is a fact rather than a guess — and it still excludes
+        // the opposite direction, which was the reason for the strict rule in
+        // the first place, because a return variant reaches the alighting
+        // stop before the boarding one.
+        var serving: Set<String> = [pid]
+        if let alight = leg.alightStop {
+            for p in store.patterns(ofLine: line) {
+                let ps = store.patternStops(p.id)
+                guard let b = ps.firstIndex(where: { $0.stopCode == board.code }),
+                      let a = ps.firstIndex(where: { $0.stopCode == alight.code }),
+                      b < a else { continue }
+                serving.insert(p.id)
+            }
+        }
+
         return RouteContext(line: line, patternId: pid, shape: shape,
                             boardAlong: cum[min(boardIdx, cum.count - 1)],
-                            boardStop: board)
+                            boardStop: board, servingPatterns: serving)
     }
 
     /// Hands the animator the route and the latest fixes.

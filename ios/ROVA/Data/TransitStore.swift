@@ -166,6 +166,20 @@ final class TransitStore: @unchecked Sendable {
         return out
     }
 
+    /// The distinct lines that call at a stop, ordered.
+    ///
+    /// Exists because a stop's *name* is not a reliable guide to what serves
+    /// it: "AVCILAR METROBÜS" is an ordinary bus stop named after the
+    /// Metrobüs station, served only by 76D and 76O, while the actual
+    /// Metrobüs platforms are 242 m away under an entirely different name.
+    /// Someone choosing that stop expecting a Metrobüs has been misled by the
+    /// data, and the only fix is to show what really calls there.
+    func linesCalling(at stopCode: String) -> [String] {
+        var seen = Set<String>()
+        for (p, _) in patternsCalling(at: stopCode) { seen.insert(p.line) }
+        return seen.sorted()
+    }
+
     // MARK: schedules
 
     /// GTFS service ids active on a given date.

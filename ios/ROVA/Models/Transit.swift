@@ -189,20 +189,75 @@ struct LiveJourney: Identifiable, Sendable, Hashable {
     let alternatives: [ETA]
     var id: UUID { option.id }
 
-    /// Seconds of walking between here and the boarding stop.
-    var walkToStopSeconds: Int { option.legs.first(where: { $0.kind == .walk })?.seconds ?? 0 }
+    /// A measured pedestrian route to the boarding stop, when one is known.
+    /// Set by `JourneyEngine`; nil means nobody has measured this walk yet.
+    var measuredWalk: WalkTimes.Walk? = nil
 
-    /// The first vehicle you could actually reach on foot.
+    /// Seconds of walking between here and the boarding stop.
     ///
-    /// A bus two minutes away is useless when the stop is an eleven minute
-    /// walk, so ROVA counts down the first one you can still catch — with a
-    /// one-minute grace for a brisk pace.
-    var eta: ETA? {
-        let grace = 60.0
-        let needed = Double(walkToStopSeconds) - grace
-        let all = ([nearestETA].compactMap { $0 } + alternatives)
+    /// Prefers a measured pedestrian route over the planner's straight-line
+    /// estimate, because this figure decides when you are told to leave.
+    var walkToStopSeconds: Int {
+        if let m = measuredWalk { return m.seconds }
+        return option.legs.first(where: { $0.kind == .walk })?.seconds ?? 0
+    }
+
+    /// False when the walk is still the planner's straight-line estimate.
+    /// The UI says so rather than letting an estimate look like a measurement.
+    var walkIsMeasured: Bool { measuredWalk?.isMeasured == true }
+
+    /// The vehicle the countdown is about, held steady by the engine.
+    /// Nil means nothing has been chosen yet and the best catchable one wins.
+    var subjectDoorNo: String? = nil
+
+    /// Every known vehicle for this leg, soonest first.
+    var allETAs: [ETA] {
+        ([nearestETA].compactMap { $0 } + alternatives)
             .sorted { $0.predictedMinutes < $1.predictedMinutes }
-        return all.first { $0.predictedMinutes * 60 >= needed }
+    }
+
+    /// A bus two minutes away is useless when the stop is an eleven minute
+    /// walk, so the first choice is the soonest one you could still reach —
+    /// with a minute of grace for a brisk pace.
+    var firstCatchable: ETA? {
+        let needed = Double(walkToStopSeconds) - 60
+        return allETAs.first { $0.predictedMinutes * 60 >= needed }
+    }
+
+    /// The vehicle being counted down.
+    ///
+    /// Once ROVA is counting a particular bus it keeps counting *that* bus
+    /// while it is still approaching, even after it becomes too close to
+    /// reach on foot. It used to re-pick the soonest catchable vehicle on
+    /// every refresh, so a bus you were watching approach would silently drop
+    /// out the moment it got nearer than your walk — and the next one, an
+    /// hour behind, took its place. From the pavement that is the app
+    /// changing "2 minutes" into "an hour" for no stated reason.
+    ///
+    /// The bus is now kept, and `isReachable` says plainly when you can no
+    /// longer make it.
+    var eta: ETA? {
+        if let s = subjectDoorNo,
+           let held = allETAs.first(where: { $0.vehicleDoorNo == s }) { return held }
+        return firstCatchable ?? allETAs.first
+    }
+
+    /// False when the bus being counted down arrives before you could walk
+    /// to the stop. The countdown continues; the screen says you cannot
+    /// make it, and offers the next one.
+    var isReachable: Bool {
+        guard let e = eta else { return false }
+        return e.predictedMinutes * 60 >= Double(walkToStopSeconds) - 60
+    }
+
+    /// The next bus you *could* still catch, when the current one is lost.
+    var nextReachable: ETA? {
+        guard let current = eta else { return firstCatchable }
+        let needed = Double(walkToStopSeconds) - 60
+        return allETAs.first {
+            $0.vehicleDoorNo != current.vehicleDoorNo
+                && $0.predictedMinutes * 60 >= needed
+        }
     }
 
     /// A vehicle that is arriving but cannot be reached in time, if any.

@@ -10,6 +10,8 @@ struct JourneySheet: View {
     @Binding var editing: RootView.EndpointEdit?
     @Binding var showSettings: Bool
     var onPlaceChosen: (RootView.EndpointEdit, Place) -> Void
+    /// Close the card entirely and leave the map alone.
+    var onClose: () -> Void = {}
 
     @State private var now = Date()
     private let clock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -39,6 +41,24 @@ struct JourneySheet: View {
     private var content: some View {
         ScrollView {
             VStack(spacing: RV.Space.l) {
+                // Close it and keep only the map: sometimes you are not going
+                // anywhere, you just want to watch the buses.
+                HStack {
+                    Spacer(minLength: 0)
+                    Button {
+                        Haptic.tap(); onClose()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(RV.Color.inkMuted)
+                            .frame(width: 28, height: 28)
+                            .glassEffect(.regular, in: .circle)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Hide the journey card")
+                }
+                .padding(.bottom, -RV.Space.s)
+
                 if engine.isPlanning && engine.journeys.isEmpty {
                     SkeletonHero()
                 } else if engine.journeys.isEmpty {
@@ -53,7 +73,14 @@ struct JourneySheet: View {
                     }
                 } else if let p = primary {
                     HeroCard(journey: p, now: now, expanded: detent != .height(260))
-                        .onTapGesture { Haptic.tap(); preview = p }
+                        .onTapGesture {
+                            Haptic.tap()
+                            // Opening the stop list also puts the bus on the
+                            // map. "Which stops does it call at" and "where
+                            // is it right now" are the same curiosity.
+                            if let d = p.eta?.vehicleDoorNo { engine.selectVehicle(d) }
+                            preview = p
+                        }
                     if detent != .height(260) {
                         JourneyDetail(journey: p)
                     }
@@ -187,6 +214,27 @@ struct HeroCard: View {
                       systemImage: "figure.walk.departure")
                     .font(.rvCaption).foregroundStyle(RV.Color.inkFaint)
             }
+            // When the bus can no longer be reached, say it here rather than
+            // swapping the number for a different bus. Watching "2 minutes"
+            // become "an hour" with no explanation is the single thing that
+            // destroys trust in a countdown.
+            if !journey.isReachable, let next = journey.nextReachable {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("You can no longer reach this one on foot — it gets to "
+                          + "\(leg?.boardStop?.name ?? "the stop") before you could.",
+                          systemImage: "figure.walk.motion")
+                        .font(.rvCallout).foregroundStyle(RV.Color.ink)
+                    Text("Next you can catch: \(next.lineCode) · "
+                         + "\(Int(next.predictedMinutes.rounded())) min"
+                         + (next.vehicleDoorNo.map { " · \($0)" } ?? ""))
+                        .font(.rvCaption).foregroundStyle(RV.Color.inkMuted)
+                }
+                .padding(.horizontal, RV.Space.m).padding(.vertical, RV.Space.s)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RV.Color.warn.opacity(0.14),
+                            in: RoundedRectangle(cornerRadius: RV.Radius.s, style: .continuous))
+            }
+
             // Never send someone down to the street on data that cannot carry
             // the instruction. "Leave now" is the single most consequential
             // sentence in the app — it puts a person on the pavement — so it
@@ -194,8 +242,9 @@ struct HeroCard: View {
             // moving, and at a confidence above the floor. A 33-minute-old
             // fix with a 0–47 minute range used to say it anyway.
             if eta.stalledSeconds == nil, eta.confidence != .low,
-               let leaveIn = journey.leaveInSeconds {
-                LeaveBanner(seconds: leaveIn, window: journey.arrivalWindow)
+               journey.isReachable, let leaveIn = journey.leaveInSeconds {
+                LeaveBanner(seconds: leaveIn, window: journey.arrivalWindow,
+                            walkIsMeasured: journey.walkIsMeasured)
             } else if eta.stalledSeconds == nil, journey.leaveInSeconds != nil {
                 Label("Not certain enough to tell you when to leave.",
                       systemImage: "questionmark.circle")
@@ -231,9 +280,27 @@ struct HeroCard: View {
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(RV.Color.ink)
             }
-            Label("No vehicle is reporting a GPS position on this line yet — this is the timetable, not a confirmed arrival.",
-                  systemImage: "info.circle")
-                .font(.rvCaption).foregroundStyle(RV.Color.inkFaint)
+            // Why there is no live bus, said here rather than in a footnote.
+            //
+            // The engine already knew it was being rate limited and could say
+            // when positions would resume, but that sentence lived in a small
+            // caption at the bottom of the sheet — usually below the fold. So
+            // the screen showed an empty map and no reason, which reads as
+            // the app being broken or making things up.
+            if let problem = engine.liveProblem {
+                Label(problem, systemImage: "exclamationmark.triangle.fill")
+                    .font(.rvCallout)
+                    .foregroundStyle(RV.Color.ink)
+                    .padding(.horizontal, RV.Space.m)
+                    .padding(.vertical, RV.Space.s)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RV.Color.warn.opacity(0.14),
+                                in: RoundedRectangle(cornerRadius: RV.Radius.s, style: .continuous))
+            } else {
+                Label("No vehicle is reporting a GPS position on this line yet — this is the timetable, not a confirmed arrival.",
+                      systemImage: "info.circle")
+                    .font(.rvCaption).foregroundStyle(RV.Color.inkFaint)
+            }
         }
     }
 }
@@ -241,6 +308,9 @@ struct HeroCard: View {
 struct LeaveBanner: View {
     let seconds: Int
     var window: ClosedRange<Date>?
+    /// False when the walking time behind this advice is the planner's
+    /// straight-line estimate rather than a measured pedestrian route.
+    var walkIsMeasured: Bool = true
     // Urgency is weight, not colour: ink for "go now", amber for "soon",
     // green for "you have time". Nothing in ROVA is red.
     private var tint: Color { seconds < 45 ? RV.Color.ink : (seconds < 120 ? RV.Color.warn : RV.Color.live) }
@@ -258,6 +328,13 @@ struct LeaveBanner: View {
                     Text("it can arrive \(Fmt.clock(w.lowerBound))–\(Fmt.clock(w.upperBound))")
                         .font(.system(size: 11, weight: .medium))
                         .opacity(0.8)
+                }
+                if !walkIsMeasured {
+                    // The walk is the straight line, not the pavement. Say so:
+                    // this advice is only as good as the number behind it.
+                    Text("walking time estimated, not measured")
+                        .font(.system(size: 11, weight: .medium))
+                        .opacity(0.7)
                 }
             }
             Spacer(minLength: 0)
@@ -525,6 +602,8 @@ struct OtherOptions: View {
                         Button {
                             Haptic.select()
                             engine.select(j.option)
+                            // Show the bus itself, not just the route line.
+                            if let d = j.eta?.vehicleDoorNo { engine.selectVehicle(d) }
                             onPick(j)
                         } label: { OptionRow(journey: j) }
                         .buttonStyle(.plain)

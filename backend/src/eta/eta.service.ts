@@ -94,6 +94,10 @@ export class EtaService {
     // before staleness is subtracted, because that subtraction is itself a
     // legitimate reason for a short remaining time.
     const IMPLAUSIBLE_SPEED = 17;   // m/s — 61 km/h door to door
+    // Same number, different job: the fastest a bus could conceivably
+    // average, used to bound how soon it could physically be here.
+    const MAX_CONCEIVABLE_SPEED = 17;
+    const MAX_USABLE_FIX_AGE = 900; // s — 15 minutes
     const TYPICAL_BUS_SPEED = 7;    // m/s — 25 km/h including dwell
     let scheduleSuspect = false;
     if (remainingMetres > 400 && scheduled > 0
@@ -108,8 +112,19 @@ export class EtaService {
     const stalled = fixHistory ? stalledSeconds(fixHistory, now) : null;
     if (stalled !== null) scheduled += stalled;
 
+    // Beyond this a position is not evidence about where a bus is now. İETT
+    // keeps publishing the last known position of vehicles that finished for
+    // the day: on line 34BZ at 02:07, 112 were listed and none had reported
+    // within three minutes — median fix 2.5 hours, oldest 11 hours.
+    if (age > MAX_USABLE_FIX_AGE) return null;
+
     let seconds = Math.max(0, scheduled - age);
     if (stopsAway > 0) seconds = Math.max(seconds, 25 * stopsAway);
+
+    // A bus cannot arrive sooner than the road allows, and that bounds the
+    // estimate itself, not only the early end of its range. Bounding only the
+    // range produced a headline of "8 min" above a range of "21–293 min".
+    seconds = Math.max(seconds, remainingMetres / MAX_CONCEIVABLE_SPEED);
 
     let spread = 0.14 * seconds + 45;
     if (progressFactor === null) spread *= 1.25;
@@ -138,7 +153,11 @@ export class EtaService {
       stopCode,
       predictedArrivalMinutes: round(seconds / 60),
       arrivalRangeMinutes: {
-        minimum: round(Math.max(0, (seconds - spread) / 60)),
+        // Bounded by the road, not only by the spread: a wide spread used to
+        // drag this to zero, and a zero early bound reads as "leave now" for
+        // a bus that is kilometres away.
+        minimum: round(Math.max(0,
+          Math.max(remainingMetres / MAX_CONCEIVABLE_SPEED, seconds - spread) / 60)),
         maximum: round((seconds + spread) / 60),
       },
       lastGpsUpdateSeconds: Math.round(age),

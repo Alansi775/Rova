@@ -23,6 +23,25 @@ struct ETAEngine {
     var minProgressSamples = 2
     /// Above this the timetable is not describing a bus: 17 m/s is 61 km/h
     /// door to door, including stops.
+    /// How old a GPS fix may be before it stops being evidence at all.
+    ///
+    /// Fifteen minutes: long enough to ride out a tunnel or a gap in
+    /// coverage, short enough that a bus which finished its shift hours ago
+    /// can never be presented as approaching.
+    var maxUsableFixAge: TimeInterval = 900
+
+    /// The same limit, for callers that need it without an engine instance.
+    static let liveFixAgeLimit: TimeInterval = 900
+
+    /// The fastest a city bus could conceivably average door to door, used
+    /// only to bound how soon one could physically arrive.
+    ///
+    /// Separate from `implausibleSpeed` on purpose. That one is the knob for
+    /// "this timetable implies a speed no bus reaches", and tests drive it to
+    /// absurd values to force that branch. Sharing a constant between a ratio
+    /// test and a physical floor let one of them distort the other.
+    var maxConceivableSpeed: Double = 17
+
     var implausibleSpeed: Double = 17
     /// A realistic Istanbul city-bus average including dwell: 25 km/h.
     var typicalBusSpeed: Double = 7.0
@@ -106,10 +125,31 @@ struct ETAEngine {
 
         // The fix is `fixAge` old; assume the bus kept moving at the same rate.
         let age = vehicle.fixAge
+
+        // Beyond this, a position is not evidence about where a bus is now.
+        //
+        // İETT keeps publishing the last known position of vehicles that have
+        // finished for the day: measured on line 34BZ at 02:07, 112 vehicles
+        // were listed and not one had reported within three minutes — the
+        // median fix was 2.5 hours old and the oldest was 11 hours. Those are
+        // buses parked in a depot, and describing one as "1 stop away,
+        // arriving Now" is simply false.
+        guard age <= maxUsableFixAge else { return nil }
+
         seconds = max(0, seconds - age)
 
         // Very short hops still need a floor — the bus has to stop and open doors.
         if stopsAway > 0 { seconds = max(seconds, 25 * Double(stopsAway)) }
+
+        // A bus cannot arrive sooner than the road allows, and that bounds
+        // the estimate itself — not only the early end of its range.
+        //
+        // Applying it to the range alone produced a headline of "8 min" above
+        // a range of "21–293 min": a figure outside its own interval, which
+        // is worse than either number alone because it tells the reader the
+        // app is not even internally consistent.
+        let physicalFloor = remaining / maxConceivableSpeed
+        seconds = max(seconds, physicalFloor)
 
         let state = DataState.forFix(age: age)
 
@@ -138,7 +178,17 @@ struct ETAEngine {
             spread = max(spread, stalled)
         }
 
-        let minM = max(0, (seconds - spread) / 60)
+        // The early end of the range is bounded by the road, not just by the
+        // spread. A wide spread used to drag the lower bound to zero, giving
+        // ranges like "0–47 min" — and because `leaveInSeconds` is measured
+        // against that lower bound, a zero there reads as "leave now" for a
+        // bus that is kilometres away. That is the false urgency that sends
+        // someone down to an empty stop.
+        //
+        // `implausibleSpeed` is the fastest a city bus could conceivably
+        // average door to door, so remaining distance divided by it is the
+        // soonest this bus could physically be here.
+        let minM = max(0, max(physicalFloor, seconds - spread) / 60)
         let maxM = (seconds + spread) / 60
         return ETA(vehicleDoorNo: vehicle.doorNo,
                    lineCode: pattern.line,

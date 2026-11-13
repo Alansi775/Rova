@@ -60,7 +60,26 @@ export class IngestionService implements OnModuleInit {
 
   constructor(private readonly db: DbService, private readonly iett: IettClient) {}
 
-  onModuleInit() {
+  async onModuleInit() {
+    // Re-adopt the lines this backend has watched before.
+    //
+    // `watch()` only ever added to an in-memory list, so every restart threw
+    // away everything the phone had asked for and fell back to the two seed
+    // lines. Accuracy measurement then covered almost nothing: 275 stored
+    // Metrobüs positions stopped being refreshed the moment the process
+    // bounced, and the sampler saw a single bus.
+    try {
+      const seen = await this.db.query<{ line_code: string }>(
+        `SELECT DISTINCT line_code FROM vehicle_positions
+          WHERE source_time > now() - interval '7 days'
+          LIMIT 40`);
+      for (const r of seen) {
+        if (r.line_code && !this.lines.includes(r.line_code)) this.lines.push(r.line_code);
+      }
+    } catch {
+      // A cold database is not a reason to refuse to start.
+    }
+
     for (const l of this.lines) {
       this.health.set(l, {
         lineCode: l, lastAttempt: null, lastSuccess: null, latestSourceTime: null,
@@ -172,9 +191,13 @@ export class IngestionService implements OnModuleInit {
     // Most overdue line first, measured against its own target interval, so a
     // single tick never bursts the quota.
     const now = Date.now();
+    // A line that is resting after its own failures is skipped rather than
+    // chosen: it is the most overdue precisely because it keeps failing, so
+    // picking it would spend every tick on the one line that cannot answer
+    // while healthy lines went unfetched.
     const due = this.lines
       .map((l) => ({ l, r: (now - (this.lastFetch.get(l) ?? 0)) / this.intervalFor(l) }))
-      .filter((x) => x.r >= 1)
+      .filter((x) => x.r >= 1 && this.iett.backoffFor(x.l) === 0)
       .sort((a, b) => b.r - a.r);
     if (!due.length) return;
     if (this.iett.budget.remaining <= 0) return;
