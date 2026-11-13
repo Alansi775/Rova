@@ -191,9 +191,13 @@ export class IngestionService implements OnModuleInit {
     // Most overdue line first, measured against its own target interval, so a
     // single tick never bursts the quota.
     const now = Date.now();
+    // A line that is resting after its own failures is skipped rather than
+    // chosen: it is the most overdue precisely because it keeps failing, so
+    // picking it would spend every tick on the one line that cannot answer
+    // while healthy lines went unfetched.
     const due = this.lines
       .map((l) => ({ l, r: (now - (this.lastFetch.get(l) ?? 0)) / this.intervalFor(l) }))
-      .filter((x) => x.r >= 1)
+      .filter((x) => x.r >= 1 && this.iett.backoffFor(x.l) === 0)
       .sort((a, b) => b.r - a.r);
     if (!due.length) return;
     if (this.iett.budget.remaining <= 0) return;
