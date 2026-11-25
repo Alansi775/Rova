@@ -77,7 +77,10 @@ struct JourneySheet: View {
             .padding(.bottom, RV.Space.xxl)
         }
         .scrollBounceBehavior(.basedOnSize)
-        .background(RV.Color.canvas)
+        // The field the cards sit on. It was `systemBackground`, the same
+        // tone as a card, so nothing looked raised and the whole sheet read
+        // as one flat panel with outlines drawn on it.
+        .background(RV.Color.cardField)
         // The system close button, not a drawn xmark in a glass circle.
         // `Button(role: .close)` is the control iOS already uses to dismiss a
         // sheet: it looks right, it grows under a long press, and it carries

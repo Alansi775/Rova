@@ -22,6 +22,12 @@ enum RV {
         static let canvas      = SwiftUI.Color(.systemBackground)
         static let surface     = SwiftUI.Color(uiColor: .secondarySystemBackground)
         static let raised      = SwiftUI.Color(uiColor: .tertiarySystemBackground)
+
+        /// A card, and the darker field it sits on. The system's own pair for
+        /// inset-grouped content, so a card is told apart from its background
+        /// by the platform's contrast rather than by a drawn border.
+        static let cardFill    = SwiftUI.Color(uiColor: .secondarySystemGroupedBackground)
+        static let cardField   = SwiftUI.Color(uiColor: .systemGroupedBackground)
         static let hairline    = SwiftUI.Color.primary.opacity(0.08)
 
         static let ink         = SwiftUI.Color.primary
@@ -154,6 +160,21 @@ extension View {
 
 // MARK: - Surfaces
 
+/// A raised card, the way the system makes one.
+///
+/// This used to be a flat rectangle of `tertiarySystemBackground` with a
+/// half-point hairline drawn round it at a 28pt radius. A rider called it an
+/// imitation of Apple's cards, and it was: Apple does not outline a card. The
+/// separation comes from the card's fill sitting on a *darker grouped*
+/// background, and from a shadow so soft you would not name it if asked — not
+/// from a border, and not from a radius larger than anything the system uses.
+///
+/// `secondarySystemGroupedBackground` on `systemGroupedBackground` is the pair
+/// iOS itself uses for inset-grouped content, and it is correct in both
+/// appearances and under Increase Contrast without this file knowing those
+/// settings exist. The radius drops to 20pt, which is what a sheet's own
+/// corners are drawn at, so the cards inside echo the container rather than
+/// out-curving it.
 struct RVCard<Content: View>: View {
     var padding: CGFloat = RV.Space.l
     @ViewBuilder var content: Content
@@ -161,11 +182,9 @@ struct RVCard<Content: View>: View {
         content
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RV.Color.raised, in: RoundedRectangle(cornerRadius: RV.Radius.l, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: RV.Radius.l, style: .continuous)
-                    .strokeBorder(RV.Color.hairline, lineWidth: 0.5)
-            )
+            .background(RV.Color.cardFill,
+                        in: RoundedRectangle(cornerRadius: RV.Radius.m, style: .continuous))
+            .shadow(color: .black.opacity(0.06), radius: 10, y: 3)
     }
 }
 
