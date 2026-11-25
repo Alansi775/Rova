@@ -17,6 +17,7 @@ final class TransitStore: @unchecked Sendable {
     private(set) var meta: [String: String] = [:]
     private var stopGrid: [GridKey: [Stop]] = [:]
     private var patternStopCache: [String: [PatternStop]] = [:]
+    private var realShapeCache: [String: [CLLocationCoordinate2D]] = [:]
     /// Separate from the SQLite lock so caching never nests inside a query.
     private let cacheLock = NSLock()
     private let lock = NSLock()
@@ -148,9 +149,57 @@ final class TransitStore: @unchecked Sendable {
         return out
     }
 
-    /// Stop coordinates along a pattern — used as the route geometry.
+    /// Stop coordinates along a pattern. Straight hops between stops: a usable
+    /// skeleton, but not the road. Prefer `realShape`.
     func patternShape(_ patternId: String) -> [CLLocationCoordinate2D] {
         patternStops(patternId).compactMap { stops[$0.stopCode]?.coordinate }
+    }
+
+    /// The route İETT actually publishes for this pattern.
+    ///
+    /// For a long time this app had no route geometry and believed none
+    /// existed, because the İETT SOAP services expose only stops, lines and
+    /// garages — the WSDLs are plain about it. So the route was drawn by
+    /// asking Apple Maps for *driving* directions between consecutive stops
+    /// and stitching the answers together. That is a car's path, not a bus's:
+    /// it takes car-legal turns a bus never makes, and when one leg failed to
+    /// route the drawn line simply broke, leaving two disconnected pieces with
+    /// a gap between them. Riders saw it immediately.
+    ///
+    /// İETT publishes the alignments on İstanbul's open data portal instead,
+    /// as 7 401 GeoJSON LineStrings keyed by the same pattern id this app
+    /// uses. 2 868 of our 2 876 patterns are covered; the eight that are not
+    /// are free-text notes that İETT stored in the pattern-code column, not
+    /// routes at all. `tools/build-shapes.py` imports them.
+    ///
+    /// Returns nil — never a guess — when a pattern has no published shape,
+    /// so a caller can say so instead of drawing something invented.
+    func realShape(_ patternId: String) -> [CLLocationCoordinate2D]? {
+        cacheLock.lock()
+        if let c = realShapeCache[patternId] { cacheLock.unlock(); return c.isEmpty ? nil : c }
+        cacheLock.unlock()
+
+        var out: [CLLocationCoordinate2D] = []
+        each("SELECT poly FROM pattern_shape WHERE pattern=?", [patternId]) { s in
+            guard let raw = sqlite3_column_blob(s, 0) else { return }
+            let bytes = Int(sqlite3_column_bytes(s, 0))
+            let count = bytes / 8                       // two float32 per point
+            out.reserveCapacity(count)
+            let buf = UnsafeRawBufferPointer(start: raw, count: bytes)
+            for i in 0..<count {
+                let lat = buf.loadUnaligned(fromByteOffset: i * 8, as: Float32.self)
+                let lon = buf.loadUnaligned(fromByteOffset: i * 8 + 4, as: Float32.self)
+                // Validated on the way out as well as on the way in: a shape
+                // is drawn on a map, and a bad point is a visible lie.
+                guard lat > 40.5, lat < 41.9, lon > 27.0, lon < 30.5 else { continue }
+                out.append(CLLocationCoordinate2D(latitude: Double(lat),
+                                                  longitude: Double(lon)))
+            }
+        }
+        cacheLock.lock()
+        realShapeCache[patternId] = out
+        cacheLock.unlock()
+        return out.isEmpty ? nil : out
     }
 
     func patterns(ofLine code: String) -> [Pattern] {

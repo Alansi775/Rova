@@ -206,6 +206,19 @@ final class JourneyEngine: ObservableObject {
     private var watchList: [String] {
         var seen = Set<String>()
         var out: [String] = []
+        // The bus the user tapped to follow comes first.
+        //
+        // It was missing from this list entirely, and that single omission is
+        // why live tracking appeared dead: tapping a bus on the map is how you
+        // say "watch this one", but the list was built only from a *planned
+        // journey*. With no journey planned there was nothing to subscribe to,
+        // so no push ever arrived for the bus on screen, and the only way to
+        // see it move was to press refresh — exactly the symptom reported. The
+        // socket was working the whole time; we never told it what to watch.
+        if let d = trackedVehicleDoorNo, let l = vehicle(doorNo: d)?.lineCode,
+           seen.insert(l).inserted {
+            out.append(l)
+        }
         if let d = onBoardDoorNo, let l = vehicle(doorNo: d)?.lineCode, seen.insert(l).inserted {
             out.append(l)
         }
@@ -217,6 +230,23 @@ final class JourneyEngine: ObservableObject {
         }
         return out
     }
+
+    /// Is any vehicle on this line reporting a usable live position?
+    ///
+    /// Used to decide how a route is drawn. The alignment itself is published
+    /// by İETT and true either way — the bus does go that way — but drawing it
+    /// in the confident live style while nothing is running says a bus is on
+    /// its way when none is. The route is the timetable; a solid line is a
+    /// claim about right now.
+    func hasLiveVehicle(onLine line: String) -> Bool {
+        (vehicles[line] ?? []).contains { $0.fixAge <= ETAEngine.liveFixAgeLimit }
+    }
+
+    /// Exposed for tests: feed vehicles in without a network.
+    func acceptForTesting(_ v: [Vehicle], for line: String) { accept(v, for: line) }
+
+    /// Exposed for tests: the lines the socket is told to watch.
+    var watchedLinesForTesting: [String] { watchList }
 
     /// Target refresh interval per line.
     ///
@@ -307,6 +337,11 @@ final class JourneyEngine: ObservableObject {
             let v = try await IETTLiveClient.shared.vehicles(line: line, force: force)
             accept(v, for: line)
             liveSource = .direct
+        } catch is CancellationError {
+            // This app abandoned the request — a newer search replaced it, or
+            // the screen went away. Nothing failed, so nothing is reported and
+            // the line is left free to be fetched again immediately.
+            return
         } catch {
             if case LiveError.budgetExhausted = error {
                 // Silent: the scheduler simply waits.
@@ -564,6 +599,11 @@ final class JourneyEngine: ObservableObject {
             select(owning.option)
         }
         trackedVehicleDoorNo = door
+        // Resubscribe at once. Waiting for the next tick meant up to ten
+        // seconds of a tapped bus sitting still before anything arrived, which
+        // reads as "the app is frozen" — and is how a correct socket still
+        // feels broken.
+        syncSocketSubscription()
     }
 
     // MARK: the trip
@@ -583,6 +623,7 @@ final class JourneyEngine: ObservableObject {
         trackedVehicleDoorNo = door
         onBoardDoorNo = nil
         refreshMotion()
+        syncSocketSubscription()
         Haptic.success()
     }
 
@@ -596,6 +637,7 @@ final class JourneyEngine: ObservableObject {
         onBoardDoorNo = door
         trackedVehicleDoorNo = door
         refreshMotion()
+        syncSocketSubscription()
     }
 
     func getOff() {

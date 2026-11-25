@@ -115,6 +115,7 @@ export class IettClient {
     // every call it makes is not a budget.
     let text: string | null = null;
     let lastError = '';
+    const wasFailing = (this.lineBackoff.get(lineCode)?.failures ?? 0) > 0;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const res = await fetch(this.fleetUrl, {
@@ -141,7 +142,13 @@ export class IettClient {
             this.quotaBackoffUntil = Date.now() + 10 * 60_000;
             throw new Error('İETT rate limit reached (Policy Falsified) — backing off 10 min');
           }
-          if (res.status >= 500 && attempt === 0 && this.budget.consume()) {
+          // Retry only a line that was healthy. The retry exists for a
+          // transient fault; on a line already failing it buys nothing and
+          // costs double. During the 2026-11-13 outage that doubling drained
+          // the whole hourly budget in minutes and left us unable to make a
+          // single call — so when İETT recovered we would not have noticed.
+          // A watchdog that starves itself watching is worse than no retry.
+          if (res.status >= 500 && attempt === 0 && !wasFailing && this.budget.consume()) {
             await new Promise((r) => setTimeout(r, 1500));
             continue;
           }
@@ -151,7 +158,7 @@ export class IettClient {
         break;
       } catch (e: any) {
         lastError = e.message;
-        if (attempt === 0 && this.budget.consume()) {
+        if (attempt === 0 && !wasFailing && this.budget.consume()) {
           await new Promise((r) => setTimeout(r, 1500));
           continue;
         }

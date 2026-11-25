@@ -169,3 +169,50 @@ describe('the request budget counts every call that reaches İETT', () => {
     expect(new IettClient().budget.remaining).toBeLessThanOrEqual(80);
   });
 });
+
+describe('a sustained outage must not starve the budget', () => {
+  const realFetch = global.fetch;
+  afterEach(() => { global.fetch = realFetch; });
+
+  it('stops retrying a line that is already failing', async () => {
+    // The retry exists for a transient fault on a healthy line. On a line
+    // that is already down it buys nothing and costs double. On 2026-11-13
+    // that doubling drained the hourly budget in minutes: from 11:47 we made
+    // zero calls to İETT, so its recovery would have gone unnoticed and the
+    // map would have stayed empty long after the buses came back.
+    let calls = 0;
+    global.fetch = jest.fn(async () => {
+      calls++;
+      return { ok: false, status: 503, text: async () => 'Service Unavailable' } as any;
+    }) as any;
+
+    const c = new IettClient();
+
+    await expect(c.vehicles('142')).rejects.toThrow();
+    expect(calls).toBe(2);              // healthy line: one retry is fair
+
+    const b = (c as any).lineBackoff.get('142');
+    b.until = 0;                        // the rest expires; the failures remain
+    await expect(c.vehicles('142')).rejects.toThrow();
+    expect(calls).toBe(3);              // known-bad line: no retry
+  }, 20_000);
+
+  it('keeps enough budget to notice recovery during a long outage', async () => {
+    global.fetch = jest.fn(async () => (
+      { ok: false, status: 503, text: async () => 'down' } as any)) as any;
+
+    const c = new IettClient();
+    const start = c.budget.remaining;
+
+    // Twenty polls of a line that is down must not cost forty calls.
+    for (let i = 0; i < 20; i++) {
+      const b = (c as any).lineBackoff.get('142');
+      if (b) b.until = 0;
+      await expect(c.vehicles('142')).rejects.toThrow();
+    }
+
+    const spent = start - c.budget.remaining;
+    expect(spent).toBe(21);             // 1 retry on the first poll only
+    expect(c.budget.remaining).toBeGreaterThan(0);
+  }, 30_000);
+});

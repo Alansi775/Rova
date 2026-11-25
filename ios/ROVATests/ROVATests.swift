@@ -1063,3 +1063,183 @@ final class MotionTests: XCTestCase {
         XCTAssertFalse(DataState.forFix(age: merged[0].fixAge).isLive)
     }
 }
+
+/// The real wire format, captured from the socket rather than imagined.
+///
+/// The push path was built, shipped, and believed to work for days while the
+/// only evidence was that the transport connected. A socket that delivers a
+/// frame the app silently fails to decode looks exactly like a socket that
+/// delivers nothing: the bus sits still until someone presses refresh, which
+/// is the symptom that started this.
+///
+/// The JSON below is copied verbatim from a push received through the tunnel
+/// at 2026-11-13 20:05 UTC, so the decoder is pinned to what the backend
+/// actually sends. If either side renames a field, this fails.
+final class SocketWireFormatTests: XCTestCase {
+
+    /// Captured from the live socket, untouched.
+    private let realPush = """
+    {"type":"vehicles","lineCode":"146","at":"2026-11-13T20:06:14.431Z","vehicles":[\
+    {"vehicleId":"A-1744","patternId":"146_G_D7745",\
+    "position":{"lat":41.07574,"lon":28.66555},\
+    "sourceTime":"2026-11-13T20:05:49.000Z","ageSeconds":25},\
+    {"vehicleId":"K1607","patternId":"146_D_D0",\
+    "position":{"lat":40.9849166666667,"lon":28.7241666666667},\
+    "sourceTime":"2026-11-13T20:05:50.000Z","ageSeconds":24}]}
+    """
+
+    func testDecodesAnActualPushFromTheBackend() throws {
+        let vehicles = try XCTUnwrap(LiveSocket.decodeForTesting(realPush),
+                                     "the app must decode what the backend really sends")
+        XCTAssertEqual(vehicles.count, 2)
+
+        let first = try XCTUnwrap(vehicles.first)
+        XCTAssertEqual(first.doorNo, "A-1744")
+        XCTAssertEqual(first.lineCode, "146")
+        XCTAssertEqual(first.patternId, "146_G_D7745")
+        XCTAssertEqual(first.lat, 41.07574, accuracy: 0.00001)
+        XCTAssertEqual(first.lon, 28.66555, accuracy: 0.00001)
+    }
+
+    /// A push for a line we cannot name is not a push we can use.
+    func testRejectsAPushWithNoLine() {
+        let noLine = """
+        {"type":"vehicles","vehicles":[{"vehicleId":"X","patternId":"p",\
+        "position":{"lat":41.0,"lon":28.9},"sourceTime":"2026-11-13T20:05:49.000Z"}]}
+        """
+        XCTAssertNil(LiveSocket.decodeForTesting(noLine))
+    }
+
+    /// Coordinates outside Istanbul are dropped, never plotted. A push is not
+    /// more trustworthy than a poll just because it arrived unasked.
+    func testDropsPositionsOutsideIstanbul() throws {
+        let offMap = """
+        {"type":"vehicles","lineCode":"146","vehicles":[\
+        {"vehicleId":"GOOD","patternId":"p","position":{"lat":41.0,"lon":28.9},\
+        "sourceTime":"2026-11-13T20:05:49.000Z"},\
+        {"vehicleId":"NULLISLAND","patternId":"p","position":{"lat":0,"lon":0},\
+        "sourceTime":"2026-11-13T20:05:49.000Z"}]}
+        """
+        let vehicles = try XCTUnwrap(LiveSocket.decodeForTesting(offMap))
+        XCTAssertEqual(vehicles.map(\.doorNo), ["GOOD"])
+    }
+}
+
+/// The bus you tap is the bus you want to watch.
+///
+/// Live tracking looked dead for days: a tapped bus sat still until the
+/// refresh button was pressed. The socket was fine, the backend was pushing,
+/// and the decoder was correct — the subscription list simply never contained
+/// the line of the vehicle the user had tapped. It was built from a *planned
+/// journey*, so someone who opens the map and follows a bus subscribed to
+/// nothing and was pushed nothing.
+///
+/// A delivery mechanism that works perfectly and is never told what to deliver
+/// is indistinguishable, from the pavement, from one that does not work.
+@MainActor
+final class WatchListTests: XCTestCase {
+
+    private func vehicle(_ door: String, line: String) -> Vehicle {
+        Vehicle(doorNo: door, lat: 41.01, lon: 28.97, lineCode: line,
+                patternId: "\(line)_D_D0", lineName: line, direction: "D",
+                lastFix: Date(), nearStopCode: nil)
+    }
+
+    func testTappingABusSubscribesToItsLine() {
+        let engine = JourneyEngine()
+        engine.acceptForTesting([vehicle("K1607", line: "146")], for: "146")
+
+        XCTAssertFalse(engine.watchedLinesForTesting.contains("146"),
+                       "nothing is watched before the user asks for anything")
+
+        engine.selectVehicle("K1607")
+
+        XCTAssertEqual(engine.watchedLinesForTesting.first, "146",
+                       "the tapped bus's line must be watched, and watched first")
+    }
+
+    func testBoardingABusKeepsItsLineWatched() {
+        let engine = JourneyEngine()
+        engine.acceptForTesting([vehicle("A-1744", line: "34G")], for: "34G")
+        engine.board("A-1744")
+        XCTAssertTrue(engine.watchedLinesForTesting.contains("34G"))
+    }
+
+    func testUntrackedBusesAreNotWatched() {
+        // Watching costs İETT quota. Only what the user actually asked to
+        // follow earns a subscription.
+        let engine = JourneyEngine()
+        engine.acceptForTesting([vehicle("K1607", line: "146")], for: "146")
+        engine.acceptForTesting([vehicle("B5036", line: "142A")], for: "142A")
+        engine.selectVehicle("K1607")
+        XCTAssertFalse(engine.watchedLinesForTesting.contains("142A"))
+    }
+}
+
+/// The route drawn under a bus must be the route İETT publishes.
+///
+/// For weeks this app drew bus routes by asking Apple Maps for *driving*
+/// directions between consecutive stops and stitching the answers together,
+/// on the belief that İETT published no geometry. The SOAP services do not —
+/// their WSDLs expose stops, lines and garages only — but İstanbul's open data
+/// portal does, and it keys the alignments by the very pattern id this app
+/// already uses.
+///
+/// The cost of the wrong assumption was visible from the pavement: a car's
+/// path rather than a bus's, and a line that broke in half whenever one leg
+/// failed to route.
+@MainActor
+final class RealRouteGeometryTests: XCTestCase {
+    private let store = TransitStore.shared
+
+    func testAPublishedRouteIsAvailableAndFollowsTheRoad() throws {
+        let pid = "401_G_D0"
+        let real = try XCTUnwrap(store.realShape(pid),
+                                 "the published alignment for \(pid) must be bundled")
+
+        // A stop-to-stop skeleton has one point per stop. A road alignment has
+        // many more, because it bends with the street.
+        let skeleton = store.patternShape(pid)
+        XCTAssertGreaterThan(real.count, skeleton.count * 2,
+                             "a road has far more vertices than it has stops")
+
+        // Every point is inside Istanbul. A single stray coordinate drags a
+        // drawn line across the map.
+        for c in real {
+            XCTAssertTrue((40.5...41.9).contains(c.latitude), "lat \(c.latitude)")
+            XCTAssertTrue((27.0...30.5).contains(c.longitude), "lon \(c.longitude)")
+        }
+    }
+
+    /// The gap is the bug. Consecutive vertices must be close together, or the
+    /// drawn route jumps — which is exactly what riders reported seeing.
+    func testThePublishedRouteHasNoGaps() throws {
+        let real = try XCTUnwrap(store.realShape("401_G_D0"))
+        var worst: Double = 0
+        for i in 1..<real.count {
+            worst = max(worst, Geo.metres(real[i - 1], real[i]))
+        }
+        XCTAssertLessThan(worst, 2000,
+                          "a \(Int(worst)) m jump between vertices draws as a broken line")
+    }
+
+    /// Coverage is a fact about the bundle, so it is asserted rather than
+    /// described in a comment that can rot.
+    func testEveryBusPatternWeRouteOnHasRealGeometry() {
+        var missing: [String] = []
+        var checked = 0
+        for line in ["401", "146", "34G", "142A", "34BZ"] {
+            for p in store.patterns(ofLine: line) {
+                checked += 1
+                if store.realShape(p.id) == nil { missing.append(p.id) }
+            }
+        }
+        XCTAssertGreaterThan(checked, 10, "the fixture lines must exist in the bundle")
+        XCTAssertTrue(missing.isEmpty, "patterns with no published shape: \(missing)")
+    }
+
+    /// Absence is reported, never filled in with something invented.
+    func testAnUnknownPatternReturnsNothingRatherThanAGuess() {
+        XCTAssertNil(store.realShape("NO_SUCH_PATTERN_D_D0"))
+    }
+}

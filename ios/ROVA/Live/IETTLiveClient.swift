@@ -7,10 +7,17 @@ enum LiveError: LocalizedError {
     case malformed(String)
     case budgetExhausted(retryAfter: TimeInterval)
     case rateLimited(retryAfter: TimeInterval)
+    /// İETT's own service is failing. Distinct from `transport`, which means
+    /// *this phone* could not reach the network — blaming the rider's
+    /// connection for İETT being down sends them to check their wifi over a
+    /// fault they cannot do anything about.
+    case upstreamDown(String)
 
     var errorDescription: String? {
         switch self {
-        case .transport(let m):   return "Network problem: \(m)"
+        case .transport(let m):   return "No connection: \(m)"
+        case .upstreamDown:
+            return "İETT's live bus service is not responding — this is on their side, not yours"
         case .soapFault(let m):   return "İETT service error: \(m)"
         case .malformed(let m):   return "Unexpected İETT response: \(m)"
         case .budgetExhausted:    return "Holding back to stay inside İETT's hourly request limit"
@@ -86,9 +93,19 @@ actor IETTLiveClient {
 
         // The İETT gateway emits a sporadic 503 for an otherwise valid request,
         // so one transient failure is retried before the line is reported down.
-        // The retry does not consume a second budget slot.
+        // The retry is charged to the budget: İETT counts calls at its gateway,
+        // not our successes, and an uncounted second call is what pushed the
+        // backend past the limit during the 2026-11-13 outage.
         var body = ""
         var attempt = 0
+        // Retry only a line that was healthy. On a line already failing the
+        // retry buys nothing and costs double, and that doubling is what
+        // drained the backend's hourly budget to zero during the 2026-11-13
+        // outage — leaving it unable to make a single call, so İETT's recovery
+        // would have gone unnoticed and the map stayed empty after the buses
+        // were back. A client that starves itself watching is worse than one
+        // that does not retry at all.
+        let wasFailing = consecutiveFailures > 0
         while true {
             do {
                 let (data, response) = try await session.data(for: req)
@@ -99,24 +116,43 @@ actor IETTLiveClient {
                 if http.statusCode == 200 { body = text; break }
                 let fault = Self.extract(text, tag: "faultstring") ?? "HTTP \(http.statusCode)"
                 // Layer7 answers an over-quota caller with "Policy Falsified".
-                if fault.localizedCaseInsensitiveContains("Policy Falsified") {
+                // "Policy Falsified" is Layer7's generic assertion failure, not
+                // a quota message. On 2026-11-13 it came back while we were far
+                // under the ceiling and İBB's unrelated Metro endpoint was also
+                // failing: the service was down, not our allowance spent. Only
+                // an explicit quota assertion is treated as rate limiting.
+                if fault.localizedCaseInsensitiveContains("Policy Falsified"),
+                   text.range(of: "quota|rate|throttl", options: [.regularExpression, .caseInsensitive]) != nil {
                     let wait: TimeInterval = 600
                     throttledUntil = Date().addingTimeInterval(wait)
                     lastError = "İETT rate limit reached"
                     throw LiveError.rateLimited(retryAfter: wait)
                 }
-                if http.statusCode >= 500, attempt == 0 {
+                if http.statusCode >= 500, attempt == 0, !wasFailing, budget.consume() {
                     attempt += 1
                     try? await Task.sleep(nanoseconds: 1_500_000_000)
                     continue
                 }
                 consecutiveFailures += 1
                 lastError = fault
-                throw LiveError.soapFault(fault)
+                // A 5xx is İETT's service failing, not a malformed answer.
+                throw http.statusCode >= 500
+                    ? LiveError.upstreamDown(fault)
+                    : LiveError.soapFault(fault)
             } catch let e as LiveError {
                 throw e
+            } catch is CancellationError {
+                // We cancelled this ourselves — the user typed another search,
+                // or the view went away. It is not a failure, so it is not
+                // retried, not counted against the line's health, and above all
+                // not shown to the rider as "Network problem: cancelled", which
+                // is what sent them looking at their own signal over a request
+                // this app chose to abandon.
+                throw CancellationError()
+            } catch let urlError as URLError where urlError.code == .cancelled {
+                throw CancellationError()
             } catch {
-                if attempt == 0 {
+                if attempt == 0, !wasFailing, budget.consume() {
                     attempt += 1
                     try? await Task.sleep(nanoseconds: 1_500_000_000)
                     continue

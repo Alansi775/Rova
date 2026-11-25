@@ -6,7 +6,7 @@ struct JourneyMapView: View {
     @EnvironmentObject var settings: Settings
     @EnvironmentObject var location: LocationService
     @StateObject private var walks = WalkRouteCache()
-    @StateObject private var roads = RoadShapes.shared
+    private let store = TransitStore.shared
     /// Geometry captured at the moment Start was pressed, so the drawn route
     /// stays put for the whole trip.
     @State private var frozenShapes: [String: [CLLocationCoordinate2D]] = [:]
@@ -118,7 +118,7 @@ struct JourneyMapView: View {
             var frozen: [String: [CLLocationCoordinate2D]] = [:]
             for leg in journey?.option.busLegs ?? [] {
                 guard let pid = leg.patternId else { continue }
-                frozen[pid] = roads.shape(pid, stops: leg.shape) ?? leg.shape
+                frozen[pid] = store.realShape(pid) ?? leg.shape
             }
             frozenShapes = frozen
         }
@@ -131,15 +131,27 @@ struct JourneyMapView: View {
         return motion.displays.filter { $0.doorNo == trip }
     }
 
-    /// Road geometry when Apple has given it to us, the stop sequence until
-    /// then. Drawing changes; nothing about the timing does.
+    /// The route İETT publishes for this pattern.
+    ///
+    /// This used to ask Apple Maps for driving directions between consecutive
+    /// stops and stitch them together, because the project believed no
+    /// published geometry existed. It does: it is on İstanbul's open data
+    /// portal, it covers 2 868 of our 2 876 patterns, and it is now in the
+    /// bundled database. The drawn line is the bus's real alignment, resolved
+    /// instantly and completely, so it cannot arrive half-built or break in
+    /// the middle the way a stitched car route did.
+    ///
+    /// Timing is untouched: it still comes from the stop sequence and the
+    /// schedule. This changes only what is drawn.
     private func busShape(_ leg: JourneyLeg) -> [CLLocationCoordinate2D] {
         guard let pid = leg.patternId, leg.shape.count >= 2 else { return leg.shape }
-        // Once you have pressed Start the line under you does not change shape.
-        // Road geometry that finishes resolving mid-journey is kept for next
-        // time rather than redrawing the route while you are watching it.
+        if let real = store.realShape(pid) { return real }
+        // No published alignment for this pattern (eight of them are İETT
+        // free-text notes stored in the code column). Fall back to the stop
+        // sequence, which is honest about being a skeleton, rather than to a
+        // car route pretending to be a bus.
         if engine.tripDoorNo != nil, let frozen = frozenShapes[pid] { return frozen }
-        return roads.shape(pid, stops: leg.shape) ?? leg.shape
+        return leg.shape
     }
 
     private var drawnRouteForFocusedLeg: [CLLocationCoordinate2D] {
@@ -160,10 +172,21 @@ struct JourneyMapView: View {
         ForEach(j.option.legs) { leg in
             if leg.kind == .bus {
                 let drawn = busShape(leg)
+                // A solid line is a claim that a bus is coming along it. When
+                // nothing on the line is reporting a position, the alignment
+                // is still true — İETT publishes it, the bus does run that way
+                // — but it is the timetable, not an arrival. It is drawn
+                // dashed and muted so the map never shows a confident route
+                // under the words "No live bus to follow".
+                let live = engine.hasLiveVehicle(onLine: leg.lineCode ?? "")
                 MapPolyline(coordinates: drawn)
-                    .stroke(RV.Color.accent.opacity(0.28), style: .init(lineWidth: 11, lineCap: .round, lineJoin: .round))
+                    .stroke(RV.Color.accent.opacity(live ? 0.28 : 0.10),
+                            style: .init(lineWidth: 11, lineCap: .round, lineJoin: .round))
                 MapPolyline(coordinates: drawn)
-                    .stroke(RV.Color.accent, style: .init(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                    .stroke(live ? RV.Color.accent : RV.Color.inkMuted,
+                            style: .init(lineWidth: live ? 5 : 4, lineCap: .round,
+                                         lineJoin: .round,
+                                         dash: live ? [] : [10, 9]))
             } else if leg.shape.count >= 2 {
                 MapPolyline(coordinates: walks.path(leg.shape[0], leg.shape[1]) ?? leg.shape)
                     .stroke(RV.Color.inkMuted,
