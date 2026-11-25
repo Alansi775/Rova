@@ -47,6 +47,11 @@ struct SearchView: View {
                                     Button(role: .destructive) {
                                         withAnimation { recents.remove(p) }
                                     } label: { Label("Remove", systemImage: "trash") }
+                                    // Stated, not inherited: the app's tint is
+                                    // Color.primary, which is white in dark
+                                    // mode, so the swipe action painted a white
+                                    // trash icon on a white background.
+                                    .tint(.red)
                                 }
                             }
                             Button("Clear recent places") {

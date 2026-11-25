@@ -82,6 +82,12 @@ struct RoutePreview: View {
             }
         }
         .buttonStyle(.glassProminent)
+        // The fill of a prominent glass button is the current tint, and this
+        // app's accent is Color.primary — white in dark mode. The label was
+        // white too, so the button read as an empty white slab. Tint and
+        // label are stated as a contrasting pair instead of inherited.
+        .tint(RV.Color.ink)
+        .foregroundStyle(RV.Color.onInk)
         .disabled(!isLive)
         .opacity(isLive ? 1 : 0.45)
         .padding(.horizontal, 16)

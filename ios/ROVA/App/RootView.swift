@@ -52,8 +52,8 @@ struct RootView: View {
             VStack(spacing: RV.Space.m) {
                 TopBar(origin: settings.home.name,
                        destination: settings.destination.name,
-                       onEditOrigin: { editing = .origin },
-                       onEditDestination: { editing = .destination },
+                       onEditOrigin: { beginSearch(.origin) },
+                       onEditDestination: { beginSearch(.destination) },
                        onSwap: swap,
                        onSettings: { showSettings = true })
 
@@ -237,6 +237,27 @@ struct RootView: View {
         }
     }
 
+    /// Open the place search, bringing the card back if it was closed.
+    ///
+    /// The search field sits above the map and is always tappable, but the
+    /// search screen is presented *by* the journey card — two `.sheet`
+    /// modifiers on one view fight each other, which is why it was built that
+    /// way. So with the card hidden, tapping the field did nothing at all.
+    ///
+    /// Hiding the card means "I am not going anywhere right now". Searching
+    /// means the opposite, so it brings the card back and the chosen journey
+    /// appears in it.
+    private func beginSearch(_ which: EndpointEdit) {
+        if !sheet {
+            sheetClosedOnPurpose = false
+            sheet = true
+            // Let the sheet finish presenting before presenting from it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { editing = which }
+        } else {
+            editing = which
+        }
+    }
+
     private func replan() {
         Task { await engine.plan(from: settings.home.coordinate, to: settings.destination.coordinate) }
     }
@@ -324,6 +345,12 @@ struct RootView: View {
                 Text("Use this point as").rvOverlineStyle()
                 Button("Starting point") { setPin(asOrigin: true) }
                     .buttonStyle(.glassProminent)
+        // The fill of a prominent glass button is the current tint, and this
+        // app's accent is Color.primary — white in dark mode. The label was
+        // white too, so the button read as an empty white slab. Tint and
+        // label are stated as a contrasting pair instead of inherited.
+        .tint(RV.Color.ink)
+        .foregroundStyle(RV.Color.onInk)
                 Button("Destination") { setPin(asOrigin: false) }
                     .buttonStyle(.glass)
                 Button("Cancel") { pendingPin = nil }
@@ -371,43 +398,28 @@ struct TopBar: View {
     var onSettings: () -> Void
 
     var body: some View {
-        HStack(spacing: RV.Space.m) {
-            VStack(spacing: 0) {
+        // Everything in the bar shares one piece of glass, so the four
+        // controls lens each other's edges instead of each carrying its own
+        // slab of material.
+        GlassEffectContainer(spacing: RV.Space.s) {
+            barContent
+        }
+    }
+
+    private var barContent: some View {
+        HStack(spacing: RV.Space.s) {
+            VStack(spacing: RV.Space.s) {
                 row(dot: AnyView(Circle().strokeBorder(RV.Color.inkMuted, lineWidth: 2.5).frame(width: 10, height: 10)),
                     text: origin, action: onEditOrigin)
-                HStack(spacing: RV.Space.m) {
-                    VStack(spacing: 2) {
-                        ForEach(0..<3, id: \.self) { _ in
-                            Circle().fill(RV.Color.inkFaint).frame(width: 2, height: 2)
-                        }
-                    }
-                    .frame(width: 10)
-                    Divider().opacity(0)
-                }
-                .frame(height: 12)
                 row(dot: AnyView(RoundedRectangle(cornerRadius: 2).fill(RV.Color.accent).frame(width: 10, height: 10)),
                     text: destination, action: onEditDestination)
             }
-            .padding(.vertical, RV.Space.m)
 
-            // These two used to sit flush against the top and bottom of the
-            // card: the left column carried vertical padding and this one did
-            // not, so the glass circles touched the card's own edge and the
-            // whole control looked cramped. They now breathe, and they are
-            // 36pt — a comfortable tap target rather than a tight one.
-            // One piece of glass for the pair, so they lens each other's
-            // edges the way the system groups controls.
-            GlassEffectContainer(spacing: RV.Space.s) {
-                VStack(spacing: RV.Space.s) {
-                    circleButton("arrow.up.arrow.down", "Swap origin and destination", onSwap)
-                    circleButton("slider.horizontal.3", "Settings", onSettings)
-                }
+            VStack(spacing: RV.Space.s) {
+                circleButton("arrow.up.arrow.down", "Swap origin and destination", onSwap)
+                circleButton("slider.horizontal.3", "Settings", onSettings)
             }
-            .padding(.vertical, RV.Space.m)
-            .padding(.trailing, RV.Space.m)
         }
-        .padding(.leading, RV.Space.l)
-        .glassEffect(.regular, in: .rect(cornerRadius: RV.Radius.l, style: .continuous))
     }
 
     private func circleButton(_ icon: String, _ label: String,
@@ -426,18 +438,24 @@ struct TopBar: View {
         Button(action: { Haptic.tap(); action() }) {
             HStack(spacing: RV.Space.m) {
                 dot.frame(width: 10)
-                Text(text).font(.rvHeadline).foregroundStyle(RV.Color.ink)
+                Text(text).font(.rvHeadline)
                     .lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 0)
                 // Says, without a word of instruction, that this is a field
                 // you can type a place into.
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(RV.Color.inkFaint)
+                    .opacity(0.45)
             }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        // The same material and the same behaviour as every other control:
+        // it answers a press and grows under a long one. It was a plain
+        // button with glass painted behind the whole bar, so the two fields
+        // looked like a surface rather than two things you can tap.
+        .buttonStyle(.glass)
+        .controlSize(.large)
+        .tint(RV.Color.ink)
+        .foregroundStyle(RV.Color.ink)
     }
 }
 
