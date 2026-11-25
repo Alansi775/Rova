@@ -10,6 +10,19 @@ struct JourneyMapView: View {
     /// Geometry captured at the moment Start was pressed, so the drawn route
     /// stays put for the whole trip.
     @State private var frozenShapes: [String: [CLLocationCoordinate2D]] = [:]
+
+    /// How much of a newly chosen route has been drawn, 0...1.
+    ///
+    /// A route that simply appears gives no sense of direction — which end is
+    /// the start, and which way the bus runs, have to be worked out from the
+    /// pins. Drawing it from the boarding stop outwards answers both before
+    /// the rider has finished looking at it.
+    ///
+    /// It runs once per journey and only on first appearance. A route that
+    /// redrew itself on every live update would be a distraction on a moving
+    /// bus, and would hide the one motion that matters — the vehicle's.
+    @State private var drawProgress: Double = 1
+    @State private var drawnJourneyID: UUID?
     @EnvironmentObject var motion: VehicleAnimator
 
     @Binding var camera: MapCameraPosition
@@ -112,7 +125,10 @@ struct JourneyMapView: View {
                     .onChanged { _ in onInteractionChange?(true) }
                     .onEnded { _ in onInteractionChange?(false) })
         }
-        .onChange(of: journey?.option.id) { _, _ in requestWalks() }
+        .onChange(of: journey?.option.id) { _, id in
+            requestWalks()
+            animateRouteIn(id)
+        }
         .onChange(of: engine.tripDoorNo) { _, trip in
             guard trip != nil else { frozenShapes = [:]; return }
             var frozen: [String: [CLLocationCoordinate2D]] = [:]
@@ -122,7 +138,10 @@ struct JourneyMapView: View {
             }
             frozenShapes = frozen
         }
-        .onAppear { requestWalks() }
+        .onAppear {
+            requestWalks()
+            animateRouteIn(journey?.option.id)
+        }
     }
 
     /// Once a trip is running the map is about one bus, so the rest go away.
@@ -152,6 +171,24 @@ struct JourneyMapView: View {
         // car route pretending to be a bus.
         if engine.tripDoorNo != nil, let frozen = frozenShapes[pid] { return frozen }
         return leg.shape
+    }
+
+    /// The leading part of a route, while it is being drawn in.
+    private func revealed(_ shape: [CLLocationCoordinate2D]) -> [CLLocationCoordinate2D] {
+        guard drawProgress < 1, shape.count >= 2 else { return shape }
+        let cum = Geo.cumulative(shape)
+        guard let total = cum.last, total > 1 else { return shape }
+        let to = max(1, total * drawProgress)
+        let part = Geo.slice(shape, cumulative: cum, from: 0, to: to)
+        return part.count >= 2 ? part : Array(shape.prefix(2))
+    }
+
+    /// Draw the route in, once, when a different journey is chosen.
+    private func animateRouteIn(_ id: UUID?) {
+        guard let id, id != drawnJourneyID else { return }
+        drawnJourneyID = id
+        drawProgress = 0
+        withAnimation(.easeOut(duration: 0.85)) { drawProgress = 1 }
     }
 
     /// The ride split at the bus: behind it, and ahead of it.
@@ -208,7 +245,7 @@ struct JourneyMapView: View {
                                 style: .init(lineWidth: 6, lineCap: .round, lineJoin: .round))
                 }
             } else if leg.kind == .bus {
-                let drawn = busShape(leg)
+                let drawn = revealed(busShape(leg))
                 // A solid line is a claim that a bus is coming along it. When
                 // nothing on the line is reporting a position, the alignment
                 // is still true — İETT publishes it, the bus does run that way

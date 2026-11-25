@@ -29,7 +29,7 @@ struct JourneySheet: View {
                             engine.select(j.option)
                             engine.startTrip(d)
                             preview = nil
-                            detent = .height(260)
+                            detent = .height(280)
                             onFrame()
                         }
                     }
@@ -46,15 +46,15 @@ struct JourneySheet: View {
                 } else if engine.journeys.isEmpty {
                     EmptyState()
                 } else if engine.tripDoorNo != nil {
-                    TripView(now: now, expanded: detent != .height(260))
+                    TripView(now: now, expanded: detent != .height(280))
                 } else if engine.onBoardDoorNo != nil {
                     OnBoardCard(now: now)
                         .onTapGesture { expand() }
-                    if detent != .height(260), let p = primary {
+                    if detent != .height(280), let p = primary {
                         JourneyDetail(journey: p)
                     }
                 } else if let p = primary {
-                    HeroCard(journey: p, now: now, expanded: detent != .height(260))
+                    HeroCard(journey: p, now: now, expanded: detent != .height(280))
                         .onTapGesture {
                             Haptic.tap()
                             // Opening the stop list also puts the bus on the
@@ -63,7 +63,7 @@ struct JourneySheet: View {
                             if let d = p.eta?.vehicleDoorNo { engine.selectVehicle(d) }
                             preview = p
                         }
-                    if detent != .height(260) {
+                    if detent != .height(280) {
                         JourneyDetail(journey: p)
                     }
                     OtherOptions(current: p) { j in
@@ -106,7 +106,7 @@ struct JourneySheet: View {
     private func expand() {
         Haptic.tap()
         withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
-            detent = detent == .height(260) ? .medium : .height(260)
+            detent = detent == .height(280) ? .large : .height(280)
         }
     }
 }

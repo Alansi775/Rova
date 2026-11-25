@@ -19,7 +19,7 @@ struct RootView: View {
     @State private var currentSpan: MKCoordinateSpan?
     @State private var mapIsBeingDragged = false
     @State private var detent: PresentationDetent =
-        ProcessInfo.processInfo.arguments.contains("-ROVAExpanded") ? .large : .height(260)
+        ProcessInfo.processInfo.arguments.contains("-ROVAExpanded") ? .large : .height(280)
     @State private var editing: EndpointEdit?
     @State private var showSettings = false
     @State private var pendingPin: CLLocationCoordinate2D?
@@ -108,7 +108,16 @@ struct RootView: View {
                 .environmentObject(engine)
                 .environmentObject(settings)
                 .environmentObject(motion)
-                .presentationDetents([.height(130), .height(260), .medium, .large], selection: $detent)
+                // Three heights, not four. Every extra detent is another
+                // place a drag can catch, and 260pt and .medium sat close
+                // enough together that the sheet snapped between them while
+                // the finger was still moving.
+                .presentationDetents([.height(130), .height(280), .large], selection: $detent)
+                // A drag anywhere on the card resizes it, instead of being
+                // swallowed by the scroll view inside. That is what made it
+                // hard to pull up and hard to put back down: the gesture was
+                // scrolling content that had nowhere to scroll.
+                .presentationContentInteraction(.resizes)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
                 .presentationDragIndicator(.visible)
                 .presentationCornerRadius(28)
@@ -209,7 +218,7 @@ struct RootView: View {
     private var detentHeight: CGFloat {
         switch detent {
         case .height(130): return 130
-        case .height(260): return 260
+        case .height(280): return 260
         default: return 260
         }
     }

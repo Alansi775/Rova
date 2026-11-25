@@ -1405,3 +1405,69 @@ final class PlannerSanityTests: XCTestCase {
         XCTAssertTrue(planner.isSensibleRide(winding, origin: home, destination: avcilar))
     }
 }
+
+/// Drawing a route in must never change the route.
+///
+/// The reveal is cosmetic, so the one thing it must not do is alter the
+/// geometry a rider reads a journey from. These pin the slicing it relies on:
+/// a partial route is a genuine prefix of the whole one, it only grows, and at
+/// the end it is the whole route exactly.
+@MainActor
+final class RouteRevealTests: XCTestCase {
+    private let store = TransitStore.shared
+
+    private func shape() throws -> [CLLocationCoordinate2D] {
+        try XCTUnwrap(store.realShape("146_D_D0"))
+    }
+
+    private func revealed(_ shape: [CLLocationCoordinate2D],
+                          _ progress: Double) -> [CLLocationCoordinate2D] {
+        let cum = Geo.cumulative(shape)
+        guard let total = cum.last, total > 1 else { return shape }
+        return Geo.slice(shape, cumulative: cum, from: 0, to: max(1, total * progress))
+    }
+
+    func testAPartialRouteStartsWhereTheWholeRouteStarts() throws {
+        let full = try shape()
+        for p in [0.1, 0.35, 0.8] {
+            let part = revealed(full, p)
+            XCTAssertGreaterThanOrEqual(part.count, 2)
+            XCTAssertEqual(Geo.metres(part[0], full[0]), 0, accuracy: 1,
+                           "the reveal must begin at the start of the route")
+        }
+    }
+
+    func testTheRevealOnlyGrows() throws {
+        let full = try shape()
+        var previous = 0.0
+        for p in stride(from: 0.05, through: 1.0, by: 0.05) {
+            let part = revealed(full, p)
+            var length = 0.0
+            for i in 1..<part.count { length += Geo.metres(part[i - 1], part[i]) }
+            XCTAssertGreaterThanOrEqual(length, previous - 1,
+                                        "the drawn route shrank at \(p)")
+            previous = length
+        }
+    }
+
+    func testAtTheEndItIsTheWholeRoute() throws {
+        let full = try shape()
+        let part = revealed(full, 1.0)
+        var whole = 0.0, drawn = 0.0
+        for i in 1..<full.count { whole += Geo.metres(full[i - 1], full[i]) }
+        for i in 1..<part.count { drawn += Geo.metres(part[i - 1], part[i]) }
+        XCTAssertEqual(drawn, whole, accuracy: max(5, whole * 0.001),
+                       "a finished reveal must be the route itself")
+    }
+
+    /// Nothing is invented at the edges: every drawn point lies in Istanbul.
+    func testTheRevealInventsNoPoints() throws {
+        let full = try shape()
+        for p in [0.25, 0.5, 0.75] {
+            for c in revealed(full, p) {
+                XCTAssertTrue((40.5...41.9).contains(c.latitude))
+                XCTAssertTrue((27.0...30.5).contains(c.longitude))
+            }
+        }
+    }
+}
