@@ -150,11 +150,13 @@ struct RootView: View {
                             .font(.rvCallout)
                     }
                     .foregroundStyle(RV.Color.ink)
-                    .padding(.horizontal, RV.Space.l)
-                    .padding(.vertical, RV.Space.m)
-                    .glassEffect(.regular, in: .capsule)
                 }
-                .buttonStyle(.plain)
+                // The system style, like every other control here: it reacts
+                // to a press and grows under a long one. `.glassEffect` on a
+                // plain button only paints the material — it is the look
+                // without the behaviour, which is what made these feel dead.
+                .buttonStyle(.glass)
+                .controlSize(.large)
                 .padding(.bottom, RV.Space.xl)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -393,9 +395,13 @@ struct TopBar: View {
             // not, so the glass circles touched the card's own edge and the
             // whole control looked cramped. They now breathe, and they are
             // 36pt — a comfortable tap target rather than a tight one.
-            VStack(spacing: RV.Space.m) {
-                circleButton("arrow.up.arrow.down", "Swap origin and destination", onSwap)
-                circleButton("slider.horizontal.3", "Settings", onSettings)
+            // One piece of glass for the pair, so they lens each other's
+            // edges the way the system groups controls.
+            GlassEffectContainer(spacing: RV.Space.s) {
+                VStack(spacing: RV.Space.s) {
+                    circleButton("arrow.up.arrow.down", "Swap origin and destination", onSwap)
+                    circleButton("slider.horizontal.3", "Settings", onSettings)
+                }
             }
             .padding(.vertical, RV.Space.m)
             .padding(.trailing, RV.Space.m)
@@ -409,11 +415,10 @@ struct TopBar: View {
         Button(action: { Haptic.tap(); action() }) {
             Image(systemName: icon)
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(RV.Color.inkMuted)
-                .frame(width: 36, height: 36)
-                .glassEffect(.regular, in: .circle)
+                .frame(width: 20, height: 20)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
         .accessibilityLabel(label)
     }
 
@@ -440,19 +445,26 @@ struct MapButtons: View {
     var onRecenter: () -> Void
     var onFrame: () -> Void
     var body: some View {
-        VStack(spacing: 1) {
-            button("location.fill", onRecenter)
-            Divider().frame(width: 40)
-            button("arrow.down.left.and.arrow.up.right", onFrame)
+        // A GlassEffectContainer lets the two buttons share one piece of
+        // glass and lens each other's edges, which is what the system does
+        // for grouped controls. Drawing one rounded rectangle behind two
+        // plain buttons only imitated that.
+        GlassEffectContainer(spacing: 6) {
+            VStack(spacing: 6) {
+                button("location.fill", onRecenter)
+                button("arrow.down.left.and.arrow.up.right", onFrame)
+            }
         }
-        .glassEffect(.regular, in: .rect(cornerRadius: 20, style: .continuous))
     }
     private func button(_ s: String, _ a: @escaping () -> Void) -> some View {
-        Button(action: a) {
-            Image(systemName: s).font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(RV.Color.accent)
-                .frame(width: 44, height: 44)
+        Button { Haptic.tap(); a() } label: {
+            Image(systemName: s)
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 22, height: 22)
         }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .controlSize(.large)
     }
 }
 

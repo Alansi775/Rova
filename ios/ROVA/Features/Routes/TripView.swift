@@ -100,17 +100,15 @@ struct TripView: View {
                         .font(.rvCaption).foregroundStyle(RV.Color.stale)
                 }
 
-                Button {
+                // Ending the ride is the one action this card is about once
+                // you are aboard, so it gets a real control rather than a
+                // line of grey text pretending to be one.
+                Button("End this trip", systemImage: "flag.checkered") {
                     Haptic.tap(); engine.endTrip()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "xmark.circle.fill").font(.system(size: 13))
-                        Text("End").font(.rvCallout)
-                        Spacer(minLength: 0)
-                    }
-                    .foregroundStyle(RV.Color.inkMuted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.glass)
+                .controlSize(.large)
+                .frame(maxWidth: .infinity)
             }
         }
     }

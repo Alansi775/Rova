@@ -198,9 +198,14 @@ struct JourneyMapView: View {
                     .stroke(RV.Color.accent,
                             style: .init(lineWidth: 6, lineCap: .round, lineJoin: .round))
                 if split.travelled.count >= 2 {
+                    // The part already ridden stays the bus's colour, just
+                    // quieter. It used to be grey — all but identical to the
+                    // dotted grey of a walking leg, so the two read as the
+                    // same thing on a map where telling them apart is the
+                    // whole point. Colour means bus; grey means on foot.
                     MapPolyline(coordinates: split.travelled)
-                        .stroke(RV.Color.inkFaint.opacity(0.55),
-                                style: .init(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                        .stroke(RV.Color.accent.opacity(0.40),
+                                style: .init(lineWidth: 6, lineCap: .round, lineJoin: .round))
                 }
             } else if leg.kind == .bus {
                 let drawn = busShape(leg)
@@ -214,15 +219,21 @@ struct JourneyMapView: View {
                 MapPolyline(coordinates: drawn)
                     .stroke(RV.Color.accent.opacity(live ? 0.28 : 0.10),
                             style: .init(lineWidth: 11, lineCap: .round, lineJoin: .round))
+                // Still the bus's colour when nothing is running, only
+                // dashed and faded: the dash says "timetable, not an
+                // arrival", while the colour keeps it from being mistaken
+                // for a walk.
                 MapPolyline(coordinates: drawn)
-                    .stroke(live ? RV.Color.accent : RV.Color.inkMuted,
+                    .stroke(live ? RV.Color.accent : RV.Color.accent.opacity(0.55),
                             style: .init(lineWidth: live ? 5 : 4, lineCap: .round,
                                          lineJoin: .round,
                                          dash: live ? [] : [10, 9]))
             } else if leg.shape.count >= 2 {
+                // Walking: grey, thin, round dots. Deliberately the least
+                // like a bus route of anything drawn here.
                 MapPolyline(coordinates: walks.path(leg.shape[0], leg.shape[1]) ?? leg.shape)
                     .stroke(RV.Color.inkMuted,
-                            style: .init(lineWidth: 4, lineCap: .round, dash: [1, 8]))
+                            style: .init(lineWidth: 4, lineCap: .round, dash: [1, 9]))
             }
         }
         // You, on the route. Not a bus marker somewhere near the road, but a
