@@ -81,7 +81,7 @@ struct RoutePreview: View {
                 Text(isLive ? "Start" : "No live bus to follow")
             }
         }
-        .buttonStyle(.rvProminent)
+        .buttonStyle(.glassProminent)
         .disabled(!isLive)
         .opacity(isLive ? 1 : 0.45)
         .padding(.horizontal, 16)

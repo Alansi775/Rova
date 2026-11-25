@@ -8,6 +8,18 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
+    # TEAM: this is MSG ONE, the employer's Apple Developer team, and every
+    # App ID created under it is visible to that team's admins. ROVA is a
+    # personal project and does not belong there.
+    #
+    # Switching it out is two lines — DEVELOPMENT_TEAM below and
+    # bundleIdPrefix above — but it cannot be done from a script: Xcode must
+    # have the personal Apple ID signed in (Xcode ▸ Settings ▸ Accounts),
+    # which needs a password and a two-factor code. Until then this stays on
+    # the team that can actually sign, because an app that will not install is
+    # worse than one signed by the wrong team.
+    #
+    # To switch:  DEVELOPMENT_TEAM: 7DF7XVYYMD  and  bundleIdPrefix: com.alansi
     DEVELOPMENT_TEAM: 7UM534HHV5
     CODE_SIGN_STYLE: Automatic
     SWIFT_STRICT_CONCURRENCY: minimal

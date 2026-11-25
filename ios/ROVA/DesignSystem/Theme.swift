@@ -225,57 +225,18 @@ enum Haptic {
 /// left to pick its own label colour, which in dark mode meant white on white.
 /// Setting the label colour explicitly is the whole point — do not replace
 /// this with `.glassProminent` alone.
-struct RVProminentButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.rvHeadline)
-            .foregroundStyle(RV.Color.onInk)
-            .padding(.horizontal, RV.Space.l)
-            .padding(.vertical, 14)
-            .frame(maxWidth: .infinity)
-            .background(RV.Color.ink.opacity(configuration.isPressed ? 0.78 : 1),
-                        in: .rect(cornerRadius: RV.Radius.m, style: .continuous))
-            .contentShape(.rect(cornerRadius: RV.Radius.m, style: .continuous))
-            // Apple's controls answer the finger: they give under it and
-            // spring back past rest. A linear fade to 98.5 % reads as a
-            // picture of a button rather than a button — which is the
-            // "frozen" feel this had. The scale is deeper, the release is a
-            // spring, and the press itself is instant while only the release
-            // is animated, because a control that lags the finger by even a
-            // tenth of a second feels broken.
-            .scaleEffect(configuration.isPressed ? 0.955 : 1)
-            .animation(configuration.isPressed
-                       ? .easeOut(duration: 0.08)
-                       : .spring(response: 0.34, dampingFraction: 0.62),
-                       value: configuration.isPressed)
-            .sensoryFeedback(.impact(weight: .light), trigger: configuration.isPressed)
-    }
-}
-
-/// The quieter sibling: glass, ink label. Used where a button must not shout.
-struct RVSecondaryButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.rvHeadline)
-            .foregroundStyle(RV.Color.ink)
-            .padding(.horizontal, RV.Space.l)
-            .padding(.vertical, 12)
-            .frame(maxWidth: .infinity)
-            .glassEffect(.regular, in: .rect(cornerRadius: RV.Radius.m, style: .continuous))
-            .contentShape(.rect(cornerRadius: RV.Radius.m, style: .continuous))
-            .opacity(configuration.isPressed ? 0.82 : 1)
-            .scaleEffect(configuration.isPressed ? 0.955 : 1)
-            .animation(configuration.isPressed
-                       ? .easeOut(duration: 0.08)
-                       : .spring(response: 0.34, dampingFraction: 0.62),
-                       value: configuration.isPressed)
-            .sensoryFeedback(.impact(weight: .light), trigger: configuration.isPressed)
-    }
-}
-
-extension ButtonStyle where Self == RVProminentButtonStyle {
-    static var rvProminent: RVProminentButtonStyle { .init() }
-}
-extension ButtonStyle where Self == RVSecondaryButtonStyle {
-    static var rvSecondary: RVSecondaryButtonStyle { .init() }
-}
+// ROVA used to ship its own "glass" button styles: a rounded rect, a glass
+// background, a fade to 98.5 % on press. They were an imitation of Apple's
+// controls, and they read as one — a picture of a button rather than a
+// button, which is exactly how a rider described them.
+//
+// iOS 26 ships the real thing. `.glassProminent` and `.glass` are the system
+// Liquid Glass styles: they lens the content behind them, deform under a
+// press, grow on a long press and respond to Reduce Transparency and
+// Increase Contrast without this app having to know those settings exist.
+// Reimplementing that was never going to match it, and every imitation has to
+// be maintained against an original that keeps moving.
+//
+// Use `.buttonStyle(.glassProminent)` for the one action a screen is about,
+// `.buttonStyle(.glass)` beside it, and `Button(role: .close)` in a toolbar
+// for dismissal rather than a hand-drawn xmark.

@@ -14,6 +14,21 @@ struct JourneyPlanner {
     var detourFactor: Double = 1.32       // straight line → street distance
     var maxOriginWalk: Double = 1000
     var maxDestWalk: Double = 1000
+
+    /// How far a ride may wander compared with going straight there.
+    ///
+    /// A bus route is not a straight line, and a sensible journey can easily
+    /// cover twice the crow-flies distance through Istanbul's geography. What
+    /// is not sensible is what a rider was offered for a short hop to
+    /// Avcılar: board, ride to the far edge of the city, and come back. The
+    /// planner only ever checked that the alighting stop came *after* the
+    /// boarding stop in the pattern, which a round trip satisfies perfectly.
+    ///
+    /// Three times the direct distance, with a floor so short journeys are
+    /// not over-constrained, rejects the absurd without refusing the merely
+    /// indirect.
+    var maxRideDetourFactor: Double = 3.0
+    var minRideAllowanceMetres: Double = 4000
     var maxTransferWalk: Double = 350
 
     struct Access { let stop: Stop; let metres: Double }
@@ -69,6 +84,7 @@ struct JourneyPlanner {
         for (pid, b) in boardable {
             guard let a = alightable[pid], a.idx > b.idx, let pat = store.patterns[pid] else { continue }
             guard let leg = busLeg(pattern: pat, stops: stopsOf(pid), from: b.idx, to: a.idx) else { continue }
+            guard isSensibleRide(leg, origin: origin, destination: destination) else { continue }
             options.append(JourneyOption(legs: [
                 .walk(seconds: walkSeconds(b.walk), metres: b.walk,
                       shape: [origin, store.stop(b.stop)!.coordinate]),
@@ -115,7 +131,16 @@ struct JourneyPlanner {
                       let transferStop = store.stop(code) else { continue }
                 guard let p1 = store.patterns[r.pid], let p2 = store.patterns[a.pid],
                       let leg1 = busLeg(pattern: p1, stops: stopsOf(r.pid), from: r.boardIdx, to: r.idx),
-                      let leg2 = busLeg(pattern: p2, stops: stopsOf(a.pid), from: a.idx, to: a.alightIdx)
+                      let leg2 = busLeg(pattern: p2, stops: stopsOf(a.pid), from: a.idx, to: a.alightIdx),
+                      // Each leg must take you nearer, and the pair together
+                      // must not wander. A transfer is a chance to go the
+                      // long way round twice.
+                      isSensibleRide(leg1, origin: origin, destination: transferStop.coordinate),
+                      isSensibleRide(leg2, origin: transferStop.coordinate,
+                                     destination: destination),
+                      leg1.distanceMetres + leg2.distanceMetres
+                        <= max(minRideAllowanceMetres * 2,
+                               Geo.metres(origin, destination) * maxRideDetourFactor)
                 else { continue }
                 let bw = boardable[r.pid]!.walk, aw = alightable[a.pid]!.walk
                 let opt = JourneyOption(legs: [
@@ -153,6 +178,25 @@ struct JourneyPlanner {
 
     private func score(_ o: JourneyOption) -> Int {
         o.walkSeconds + o.rideSeconds + o.transfers * 420 + Int(o.walkMetres / 4)
+    }
+
+    /// Would this ride take you the long way round?
+    ///
+    /// Compares the distance actually ridden with the straight line from where
+    /// you start to where you are going. A ride that covers far more ground
+    /// than the journey needs is going somewhere else first.
+    func isSensibleRide(_ leg: JourneyLeg,
+                        origin: CLLocationCoordinate2D,
+                        destination: CLLocationCoordinate2D) -> Bool {
+        let direct = Geo.metres(origin, destination)
+        let allowance = max(minRideAllowanceMetres, direct * maxRideDetourFactor)
+        guard leg.distanceMetres <= allowance else { return false }
+        // And it must actually close the gap: alighting no further from the
+        // destination than boarding was rules out a ride that ends up back
+        // where it started.
+        guard let board = leg.boardStop, let alight = leg.alightStop else { return false }
+        return Geo.metres(alight.coordinate, destination)
+             < Geo.metres(board.coordinate, destination)
     }
 
     private func busLeg(pattern: Pattern, stops: [PatternStop], from: Int, to: Int) -> JourneyLeg? {

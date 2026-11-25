@@ -41,24 +41,6 @@ struct JourneySheet: View {
     private var content: some View {
         ScrollView {
             VStack(spacing: RV.Space.l) {
-                // Close it and keep only the map: sometimes you are not going
-                // anywhere, you just want to watch the buses.
-                HStack {
-                    Spacer(minLength: 0)
-                    Button {
-                        Haptic.tap(); onClose()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(RV.Color.inkMuted)
-                            .frame(width: 28, height: 28)
-                            .glassEffect(.regular, in: .circle)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Hide the journey card")
-                }
-                .padding(.bottom, -RV.Space.s)
-
                 if engine.isPlanning && engine.journeys.isEmpty {
                     SkeletonHero()
                 } else if engine.journeys.isEmpty {
@@ -96,6 +78,16 @@ struct JourneySheet: View {
         }
         .scrollBounceBehavior(.basedOnSize)
         .background(RV.Color.canvas)
+        // The system close button, not a drawn xmark in a glass circle.
+        // `Button(role: .close)` is the control iOS already uses to dismiss a
+        // sheet: it looks right, it grows under a long press, and it carries
+        // the right accessibility label in every language without this app
+        // translating one.
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button(role: .close) { Haptic.tap(); onClose() }
+            }
+        }
         .onReceive(clock) { now = $0 }
         .refreshable { await engine.refresh(force: true) }
         .sheet(item: $editing) { which in
@@ -509,7 +501,7 @@ struct StartButton: View {
                 Text(doorNo).font(.rvCaption).monospacedDigit().opacity(0.75)
             }
         }
-        .buttonStyle(.rvProminent)
+        .buttonStyle(.glassProminent)
     }
 }
 

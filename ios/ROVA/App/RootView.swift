@@ -92,6 +92,16 @@ struct RootView: View {
                              replan()
                          },
                          onClose: {
+                             // Closing the card means "I am not going
+                             // anywhere" — so the destination goes with it.
+                             // Leaving it set meant the journey, its route and
+                             // its countdown all survived the dismissal and
+                             // came straight back, which is not what closing
+                             // something means.
+                             settings.destination = Place(name: "", subtitle: "",
+                                                          lat: 0, lon: 0)
+                             engine.clearJourney()
+                             originIsPinned = false
                              sheetClosedOnPurpose = true
                              sheet = false
                          })
@@ -311,9 +321,9 @@ struct RootView: View {
             VStack(spacing: RV.Space.s) {
                 Text("Use this point as").rvOverlineStyle()
                 Button("Starting point") { setPin(asOrigin: true) }
-                    .buttonStyle(.rvProminent)
+                    .buttonStyle(.glassProminent)
                 Button("Destination") { setPin(asOrigin: false) }
-                    .buttonStyle(.rvSecondary)
+                    .buttonStyle(.glass)
                 Button("Cancel") { pendingPin = nil }
                     .font(.rvCallout).foregroundStyle(RV.Color.inkMuted)
                     .padding(.top, 2)

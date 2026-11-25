@@ -1323,3 +1323,85 @@ final class JourneySignatureTests: XCTestCase {
         XCTAssertNotEqual(a.signature, b.signature, "getting off elsewhere is another trip")
     }
 }
+
+/// A journey must go towards where you are going.
+///
+/// Asked for a short hop to Avcılar, the planner offered a ride out to the far
+/// edge of Istanbul and back. It had only ever checked that the alighting stop
+/// came *after* the boarding stop in the pattern — a condition a round trip
+/// satisfies perfectly. Nothing compared the ride with the journey.
+@MainActor
+final class PlannerSanityTests: XCTestCase {
+    private let store = TransitStore.shared
+    private lazy var planner = JourneyPlanner(store: store)
+
+    /// Roughly where the rider lives, and Avcılar — the journey that failed.
+    private let home = CLLocationCoordinate2D(latitude: 41.0056, longitude: 28.6760)
+    private let avcilar = CLLocationCoordinate2D(latitude: 40.9793, longitude: 28.7214)
+
+    func testNoOptionRidesFurtherThanTheJourneyJustifies() {
+        let options = planner.plan(from: home, to: avcilar, limit: 6)
+        XCTAssertFalse(options.isEmpty, "there must be a way to get to Avcılar")
+
+        let direct = Geo.metres(home, avcilar)
+        let allowance = max(planner.minRideAllowanceMetres,
+                            direct * planner.maxRideDetourFactor)
+        for o in options {
+            let ridden = o.busLegs.reduce(0) { $0 + $1.distanceMetres }
+            XCTAssertLessThanOrEqual(
+                ridden, allowance * 2,
+                "a \(Int(direct)) m journey offered \(Int(ridden)) m of riding")
+        }
+    }
+
+    /// Every bus leg must end nearer to where that leg was heading.
+    func testEveryRideClosesTheGap() {
+        for o in planner.plan(from: home, to: avcilar, limit: 6) {
+            guard let leg = o.busLegs.last,
+                  let board = leg.boardStop, let alight = leg.alightStop else { continue }
+            XCTAssertLessThan(Geo.metres(alight.coordinate, avcilar),
+                              Geo.metres(board.coordinate, avcilar),
+                              "the last ride on \(leg.lineCode ?? "?") ends further away")
+        }
+    }
+
+    /// The only walking offered is to the stop and from the stop.
+    func testWalksAreOnlyToAndFromTheStops() {
+        for o in planner.plan(from: home, to: avcilar, limit: 6) {
+            for w in o.legs where w.kind == .walk {
+                XCTAssertLessThanOrEqual(
+                    w.distanceMetres,
+                    max(planner.maxOriginWalk, planner.maxDestWalk) + 1,
+                    "a walking leg of \(Int(w.distanceMetres)) m is not a walk to a stop")
+            }
+        }
+    }
+
+    /// The check itself, stated directly: a ride that doubles back is refused.
+    func testARoundTripIsRejected() {
+        let board = Stop(code: "A", name: "A", lat: 41.0056, lon: 28.6760,
+                         district: "", direction: "", smart: false)
+        // Ends almost exactly where it began, after 60 km of riding.
+        let alight = Stop(code: "B", name: "B", lat: 41.0058, lon: 28.6762,
+                          district: "", direction: "", smart: false)
+        let loop = JourneyLeg(kind: .bus, seconds: 5400, distanceMetres: 60_000,
+                              lineCode: "X", patternId: "X_D_D0", headsign: "",
+                              boardStop: board, alightStop: alight,
+                              intermediateStops: 80, shape: [])
+        XCTAssertFalse(planner.isSensibleRide(loop, origin: home, destination: avcilar))
+    }
+
+    /// An indirect but reasonable ride is still allowed — the check must not
+    /// be so tight that it refuses the way the city actually works.
+    func testAnIndirectButReasonableRideIsKept() {
+        let board = Stop(code: "A", name: "A", lat: 41.0056, lon: 28.6760,
+                         district: "", direction: "", smart: false)
+        let alight = Stop(code: "B", name: "B", lat: 40.9793, lon: 28.7214,
+                          district: "", direction: "", smart: false)
+        let winding = JourneyLeg(kind: .bus, seconds: 1500, distanceMetres: 9000,
+                                 lineCode: "X", patternId: "X_D_D0", headsign: "",
+                                 boardStop: board, alightStop: alight,
+                                 intermediateStops: 20, shape: [])
+        XCTAssertTrue(planner.isSensibleRide(winding, origin: home, destination: avcilar))
+    }
+}

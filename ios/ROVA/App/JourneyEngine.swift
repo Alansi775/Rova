@@ -161,6 +161,17 @@ final class JourneyEngine: ObservableObject {
         }
     }
 
+    /// No destination, no journey — just the map and the buses on it.
+    func clearJourney() {
+        options = []
+        live = [:]
+        selected = nil
+        trackedVehicleDoorNo = nil
+        countdownSubject = [:]
+        departureCache = [:]
+        refreshMotion()
+    }
+
     /// Back to whatever ROVA thinks is best.
     func clearSelection() {
         selected = nil
@@ -650,6 +661,7 @@ final class JourneyEngine: ObservableObject {
         pendingRestore = nil
         tripStore.clear()
         NotificationCenterService.shared.resetTripWarnings()
+        Task { await TripActivityController.shared.end() }
         refreshMotion()
     }
 
@@ -876,11 +888,33 @@ final class JourneyEngine: ObservableObject {
         // Only once the rider is actually past their boarding stop: before
         // that, "two stops to go" is about a bus they are not on yet.
         guard tripPhase == .riding else { return }
+        updateLiveActivity(progress: p, leg: leg, alight: alight)
         NotificationCenterService.shared.updateAlightWarnings(
             stopsRemaining: p.stopsRemaining,
             nextStopName: p.nextStop?.name ?? alight.name,
             alightStopName: alight.name,
             lineCode: leg.lineCode ?? "")
+    }
+
+    /// Keep the Lock Screen in step with the ride.
+    private func updateLiveActivity(progress p: TripProgress,
+                                    leg: JourneyLeg, alight: Stop) {
+        guard let door = tripDoorNo else { return }
+        let live = vehicle(doorNo: door).map { $0.fixAge <= ETAEngine.liveFixAgeLimit } ?? false
+        let state = TripActivityAttributes.ContentState(
+            nextStopName: p.nextStop?.name ?? alight.name,
+            stopsRemaining: p.stopsRemaining,
+            arrivalAtAlight: onBoardETA.map { Date().addingTimeInterval($0.predictedMinutes * 60) },
+            fraction: p.fraction,
+            isLive: live)
+        let line = leg.lineCode ?? ""
+        let stop = alight.name
+        Task {
+            let c = TripActivityController.shared
+            if await c.isRunning { await c.update(state) }
+            else { await c.start(lineCode: line, alightStopName: stop,
+                                 doorNo: door, state: state) }
+        }
     }
 
     /// Supplies the rider's own position while aboard. Injected so the engine
