@@ -116,6 +116,9 @@ struct TripView: View {
     }
 
     private var stopsRemaining: Int {
+        // Prefer measured progress; fall back to the passed flags only when
+        // there is no usable fix.
+        if let p = engine.tripProgress, phase == .riding { return p.stopsRemaining }
         guard let t = target else { return 0 }
         return max(0, stops.filter { !$0.passed && $0.index <= t.index }.count)
     }
@@ -158,9 +161,19 @@ struct TripView: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text("Stops").rvOverlineStyle()
                     .padding(.bottom, RV.Space.m)
-                ForEach(stops) { s in
+                ForEach(Array(stops.enumerated()), id: \.element.id) { i, s in
                     row(s, compact: false)
                         .padding(.vertical, 5)
+                    // Between this stop and the next, when that is where the
+                    // bus actually is. The gap in the list is the gap on the
+                    // road, so "I am between 4 and 5" is visible rather than
+                    // inferred from which rows have gone grey.
+                    if let p = engine.tripProgress, p.afterStopIndex == i,
+                       i + 1 < stops.count {
+                        BetweenStopsBar(fraction: p.fraction,
+                                        nextStopName: stops[i + 1].name,
+                                        eta: p.nextStopETA, now: now)
+                    }
                 }
             }
         }

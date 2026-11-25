@@ -236,8 +236,19 @@ struct RVProminentButtonStyle: ButtonStyle {
             .background(RV.Color.ink.opacity(configuration.isPressed ? 0.78 : 1),
                         in: .rect(cornerRadius: RV.Radius.m, style: .continuous))
             .contentShape(.rect(cornerRadius: RV.Radius.m, style: .continuous))
-            .scaleEffect(configuration.isPressed ? 0.985 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            // Apple's controls answer the finger: they give under it and
+            // spring back past rest. A linear fade to 98.5 % reads as a
+            // picture of a button rather than a button — which is the
+            // "frozen" feel this had. The scale is deeper, the release is a
+            // spring, and the press itself is instant while only the release
+            // is animated, because a control that lags the finger by even a
+            // tenth of a second feels broken.
+            .scaleEffect(configuration.isPressed ? 0.955 : 1)
+            .animation(configuration.isPressed
+                       ? .easeOut(duration: 0.08)
+                       : .spring(response: 0.34, dampingFraction: 0.62),
+                       value: configuration.isPressed)
+            .sensoryFeedback(.impact(weight: .light), trigger: configuration.isPressed)
     }
 }
 
@@ -251,7 +262,14 @@ struct RVSecondaryButtonStyle: ButtonStyle {
             .padding(.vertical, 12)
             .frame(maxWidth: .infinity)
             .glassEffect(.regular, in: .rect(cornerRadius: RV.Radius.m, style: .continuous))
-            .opacity(configuration.isPressed ? 0.7 : 1)
+            .contentShape(.rect(cornerRadius: RV.Radius.m, style: .continuous))
+            .opacity(configuration.isPressed ? 0.82 : 1)
+            .scaleEffect(configuration.isPressed ? 0.955 : 1)
+            .animation(configuration.isPressed
+                       ? .easeOut(duration: 0.08)
+                       : .spring(response: 0.34, dampingFraction: 0.62),
+                       value: configuration.isPressed)
+            .sensoryFeedback(.impact(weight: .light), trigger: configuration.isPressed)
     }
 }
 

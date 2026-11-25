@@ -20,6 +20,54 @@ final class NotificationCenterService: ObservableObject {
         static let leaveNow = "rova.leave"
         static let approaching = "rova.approaching"
         static let stale = "rova.stale"
+        static let getReady = "rova.getready"
+        static let getOffNext = "rova.getoffnext"
+    }
+
+    /// Which alight warnings have already been delivered this trip, so a bus
+    /// that creeps back and forth across a stop boundary cannot buzz the
+    /// rider's pocket over and over.
+    private var firedThisTrip: Set<String> = []
+
+    /// Tell the rider to get ready, and then to get off.
+    ///
+    /// Fired from observed progress along the route, never from a countdown:
+    /// a timer says "two minutes" whether or not the bus moved, and a rider
+    /// standing up at the wrong stop because of a stale estimate is exactly
+    /// the failure this project exists to avoid. Two stops out means two stops
+    /// out, measured.
+    ///
+    /// Delivered immediately rather than scheduled, because the condition is
+    /// already true when it is detected.
+    func updateAlightWarnings(stopsRemaining: Int, nextStopName: String,
+                              alightStopName: String, lineCode: String) {
+        if stopsRemaining == 2, firedThisTrip.insert(ID.getReady).inserted {
+            deliver(id: ID.getReady,
+                    title: "Two stops to go",
+                    body: "Get ready — you get off at \(alightStopName) after next.")
+        }
+        if stopsRemaining <= 1, firedThisTrip.insert(ID.getOffNext).inserted {
+            deliver(id: ID.getOffNext,
+                    title: "Get off at the next stop",
+                    body: "\(alightStopName) is next on \(lineCode).")
+        }
+    }
+
+    /// Called when a trip starts or ends, so the next trip warns again.
+    func resetTripWarnings() {
+        firedThisTrip.removeAll()
+        center.removePendingNotificationRequests(
+            withIdentifiers: [ID.getReady, ID.getOffNext])
+    }
+
+    private func deliver(id: String, title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        content.interruptionLevel = .timeSensitive
+        // No trigger: the thing being announced is true now.
+        center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
     }
 
     func requestAuthorization() {

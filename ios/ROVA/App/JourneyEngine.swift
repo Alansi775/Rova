@@ -415,6 +415,7 @@ final class JourneyEngine: ObservableObject {
         restoreTripIfPossible()
         holdCountdownSubjects()
         refreshMotion()
+        announceAlightWarnings()
     }
 
     /// Which vehicle each journey's countdown is about.
@@ -636,6 +637,7 @@ final class JourneyEngine: ObservableObject {
         refreshMotion()
         syncSocketSubscription()
         persistTrip()
+        NotificationCenterService.shared.resetTripWarnings()
         Haptic.success()
     }
 
@@ -647,6 +649,7 @@ final class JourneyEngine: ObservableObject {
         selected = nil
         pendingRestore = nil
         tripStore.clear()
+        NotificationCenterService.shared.resetTripWarnings()
         refreshMotion()
     }
 
@@ -823,6 +826,66 @@ final class JourneyEngine: ObservableObject {
         }
         return out
     }
+
+    /// Where the bus is along the ride, right now.
+    ///
+    /// Nil when there is no trip, or when the latest fix is too old to place
+    /// the bus honestly. A progress marker that keeps sliding on a dead fix is
+    /// the most convincing lie this app could tell, because it looks exactly
+    /// like working live tracking.
+    var tripProgress: TripProgress? {
+        guard let door = tripDoorNo, let v = vehicle(doorNo: door),
+              v.fixAge <= ETAEngine.liveFixAgeLimit,
+              let ctx = routeContext else { return nil }
+        let shape = store.realShape(ctx.patternId) ?? ctx.shape
+        let stops = tripStops()
+        guard stops.count >= 2 else { return nil }
+
+        // Distance along the route of each stop in the list.
+        let cum = Geo.cumulative(shape)
+        var positions: [Double] = []
+        positions.reserveCapacity(stops.count)
+        for st in stops {
+            guard let snap = Geo.snap(.init(latitude: st.lat, longitude: st.lon),
+                                      to: shape),
+                  snap.segment + 1 < cum.count else { return nil }
+            positions.append(cum[snap.segment]
+                + (cum[snap.segment + 1] - cum[snap.segment]) * snap.t)
+        }
+        // Positions must increase along the route, or the bus cannot be placed
+        // between two of them. Out-of-order stops mean the wrong güzergah.
+        guard zip(positions, positions.dropFirst()).allSatisfy({ $0 <= $1 }) else { return nil }
+
+        // Prefer the rider's own GPS once they say they are aboard: it is
+        // theirs, it is current, and İETT's fix can be a minute behind.
+        let point = (onBoardDoorNo == door ? locationProvider?() : nil) ?? v.coordinate
+        return TripProgressCalculator.progress(coordinate: point, shape: shape,
+                                               stops: stops, stopPositions: positions)
+    }
+
+    /// Buzz the rider's pocket two stops out, then one stop out.
+    ///
+    /// Driven by measured progress along the route rather than by a
+    /// countdown. A timer says "two minutes" whether or not the bus moved;
+    /// standing up at the wrong stop because of a stale estimate is the
+    /// failure this project exists to avoid.
+    private func announceAlightWarnings() {
+        guard tripDoorNo != nil, let p = tripProgress,
+              let leg = focusedJourney?.option.busLegs.first,
+              let alight = leg.alightStop else { return }
+        // Only once the rider is actually past their boarding stop: before
+        // that, "two stops to go" is about a bus they are not on yet.
+        guard tripPhase == .riding else { return }
+        NotificationCenterService.shared.updateAlightWarnings(
+            stopsRemaining: p.stopsRemaining,
+            nextStopName: p.nextStop?.name ?? alight.name,
+            alightStopName: alight.name,
+            lineCode: leg.lineCode ?? "")
+    }
+
+    /// Supplies the rider's own position while aboard. Injected so the engine
+    /// stays testable without CoreLocation.
+    var locationProvider: (() -> CLLocationCoordinate2D?)?
 
     private var onBoardLeg: JourneyLeg? {
         guard onBoardDoorNo != nil else { return nil }

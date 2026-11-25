@@ -8,7 +8,14 @@ struct SearchView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var location: LocationService
     @StateObject private var model = SearchModel()
+    @StateObject private var recents = RecentPlaces.shared
     @FocusState private var focused: Bool
+
+    /// One way in and out, so every chosen place is remembered exactly once.
+    private func choose(_ place: Place) {
+        recents.remember(place)
+        onPick(place)
+    }
 
     var body: some View {
         NavigationStack {
@@ -19,17 +26,41 @@ struct SearchView: View {
                             guard let l = location.current else { return }
                             Task {
                                 let n = await Reverse.describe(l.coordinate)
-                                onPick(Place(name: n.0, subtitle: n.1,
-                                             lat: l.coordinate.latitude, lon: l.coordinate.longitude))
+                                choose(Place(name: n.0, subtitle: n.1,
+                                             lat: l.coordinate.latitude,
+                                             lon: l.coordinate.longitude))
                             }
                         }
-                        quick(DefaultJourney.origin.name, "house.fill") { onPick(DefaultJourney.origin) }
-                        quick(DefaultJourney.destination.name, "flag.checkered") { onPick(DefaultJourney.destination) }
+                        quick(DefaultJourney.origin.name, "house.fill") { choose(DefaultJourney.origin) }
+                        quick(DefaultJourney.destination.name, "flag.checkered") { choose(DefaultJourney.destination) }
+                    }
+                    if !recents.places.isEmpty {
+                        Section("Recent") {
+                            ForEach(recents.places, id: \.self) { p in
+                                Button { choose(p) } label: {
+                                    row(p.name, p.subtitle, "clock.arrow.circlepath")
+                                }
+                                // Swipe to forget one, because a recents list
+                                // you cannot prune becomes a list of places
+                                // you went once and never want again.
+                                .swipeActions(edge: .trailing) {
+                                    Button(role: .destructive) {
+                                        withAnimation { recents.remove(p) }
+                                    } label: { Label("Remove", systemImage: "trash") }
+                                }
+                            }
+                            Button("Clear recent places") {
+                                withAnimation { recents.removeAll() }
+                            }
+                            .font(.rvCaption)
+                            .foregroundStyle(RV.Color.inkMuted)
+                        }
                     }
                     Section("Nearby stops") {
                         ForEach(model.nearbyStops, id: \.0.code) { stop, d in
                             Button {
-                                onPick(Place(name: stop.name, subtitle: "\(stop.district) · İETT stop",
+                                choose(Place(name: stop.name,
+                                             subtitle: "\(stop.district) · İETT stop",
                                              lat: stop.lat, lon: stop.lon))
                             } label: {
                                 stopRow(stop, d)
@@ -38,7 +69,7 @@ struct SearchView: View {
                     }
                 } else {
                     ForEach(model.results) { r in
-                        Button { onPick(r.place) } label: {
+                        Button { choose(r.place) } label: {
                             row(r.title, r.subtitle, "mappin.and.ellipse")
                         }
                     }

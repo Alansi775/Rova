@@ -154,6 +154,21 @@ struct JourneyMapView: View {
         return leg.shape
     }
 
+    /// The ride split at the bus: behind it, and ahead of it.
+    private func travelledAndRemaining(_ leg: JourneyLeg)
+        -> (travelled: [CLLocationCoordinate2D], remaining: [CLLocationCoordinate2D])? {
+        guard let p = engine.tripProgress, let pid = leg.patternId else { return nil }
+        let shape = store.realShape(pid) ?? leg.shape
+        guard shape.count >= 2 else { return nil }
+        let cum = Geo.cumulative(shape)
+        guard let total = cum.last, total > 1 else { return nil }
+        let here = min(max(0, p.metresAlong), total)
+        let travelled = Geo.slice(shape, cumulative: cum, from: 0, to: here)
+        let remaining = Geo.slice(shape, cumulative: cum, from: here, to: total)
+        guard remaining.count >= 2 else { return nil }
+        return (travelled, remaining)
+    }
+
     private var drawnRouteForFocusedLeg: [CLLocationCoordinate2D] {
         guard let leg = journey?.option.busLegs.first else { return [] }
         return busShape(leg)
@@ -170,7 +185,24 @@ struct JourneyMapView: View {
     @MapContentBuilder
     private func routeContent(_ j: LiveJourney) -> some MapContent {
         ForEach(j.option.legs) { leg in
-            if leg.kind == .bus {
+            if leg.kind == .bus, engine.tripDoorNo != nil,
+               let split = travelledAndRemaining(leg) {
+                // While a trip is running the route is drawn once, in two
+                // colours: what you have already ridden, and what is still
+                // ahead. The split point is the bus's measured position on
+                // the road, so the boundary moves because the bus moved.
+                MapPolyline(coordinates: split.remaining)
+                    .stroke(RV.Color.accent.opacity(0.26),
+                            style: .init(lineWidth: 12, lineCap: .round, lineJoin: .round))
+                MapPolyline(coordinates: split.remaining)
+                    .stroke(RV.Color.accent,
+                            style: .init(lineWidth: 6, lineCap: .round, lineJoin: .round))
+                if split.travelled.count >= 2 {
+                    MapPolyline(coordinates: split.travelled)
+                        .stroke(RV.Color.inkFaint.opacity(0.55),
+                                style: .init(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                }
+            } else if leg.kind == .bus {
                 let drawn = busShape(leg)
                 // A solid line is a claim that a bus is coming along it. When
                 // nothing on the line is reporting a position, the alignment
@@ -192,6 +224,15 @@ struct JourneyMapView: View {
                     .stroke(RV.Color.inkMuted,
                             style: .init(lineWidth: 4, lineCap: .round, dash: [1, 8]))
             }
+        }
+        // You, on the route. Not a bus marker somewhere near the road, but a
+        // point on the line itself, between the stop you have left and the
+        // one you are coming to.
+        if let p = engine.tripProgress {
+            Annotation("", coordinate: p.coordinate, anchor: .center) {
+                TripProgressDot()
+            }
+            .annotationTitles(.hidden)
         }
         ForEach(j.option.busLegs) { leg in
             if let b = leg.boardStop {
