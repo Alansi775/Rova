@@ -23,6 +23,10 @@ struct RootView: View {
     @State private var editing: EndpointEdit?
     @State private var showSettings = false
     @State private var pendingPin: CLLocationCoordinate2D?
+    /// Set when the rider chooses an origin themselves — by searching for one,
+    /// dropping a pin, or swapping the ends. It stays set until they ask to
+    /// start from their location again.
+    @State private var originIsPinned = false
 
     enum EndpointEdit: Identifiable { case origin, destination
         var id: Int { self == .origin ? 0 : 1 } }
@@ -53,11 +57,11 @@ struct RootView: View {
                        onSwap: swap,
                        onSettings: { showSettings = true })
 
-                if let door = engine.trackedVehicleDoorNo,
-                   let d = motion.display(doorNo: door) {
-                    VehicleCallout(display: d) { engine.trackedVehicleDoorNo = nil }
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
+                // The vehicle card used to appear up here, above the map,
+                // while the journey card sat below it: two separate panels
+                // for one bus, with the map squeezed between them. Everything
+                // about a bus now belongs to the one card at the bottom, and
+                // the top of the screen is search and map only.
             }
             .padding(.horizontal, RV.Space.l)
             .animation(.spring(response: 0.38, dampingFraction: 0.86),
@@ -82,7 +86,7 @@ struct RootView: View {
             JourneySheet(detent: $detent, onFrame: frameJourney,
                          editing: $editing, showSettings: $showSettings,
                          onPlaceChosen: { which, place in
-                             if which == .origin { settings.home = place }
+                             if which == .origin { settings.home = place; originIsPinned = true }
                              else { settings.destination = place }
                              Haptic.success()
                              replan()
@@ -202,6 +206,13 @@ struct RootView: View {
     /// point when you have actually moved somewhere else — more than 150 m —
     /// so it never quietly re-plans under you while you wait at a stop.
     private func adoptCurrentLocation() {
+        // Once you have said where you are starting from, that is where you
+        // are starting from. This used to keep moving the origin to wherever
+        // the phone happened to be, so a journey planned at home was quietly
+        // replanned from the bus stop, and again from further down the road —
+        // the map resetting under the rider every minute or two. Walking
+        // towards your stop is not a change of plan.
+        guard !originIsPinned else { return }
         guard settings.followMyLocation, engine.tripDoorNo == nil,
               let here = location.current?.coordinate else { return }
         if Geo.metres(here, settings.home.coordinate) < 150 { return }
@@ -222,6 +233,7 @@ struct RootView: View {
         let a = settings.home
         settings.home = settings.destination
         settings.destination = a
+        originIsPinned = true
         Haptic.tap()
         replan()
     }
@@ -232,7 +244,8 @@ struct RootView: View {
         Task {
             let name = await Reverse.describe(c)
             let p = Place(name: name.0, subtitle: name.1, lat: c.latitude, lon: c.longitude)
-            if asOrigin { settings.home = p } else { settings.destination = p }
+            if asOrigin { settings.home = p; originIsPinned = true }
+            else { settings.destination = p }
             Haptic.success()
             replan()
         }
@@ -240,6 +253,9 @@ struct RootView: View {
 
     private func recenterOnUser() {
         Haptic.tap()
+        // Asking to be re-centred is asking to start from here again.
+        originIsPinned = false
+        adoptCurrentLocation()
         guard let l = location.current else { location.request(); return }
         withAnimation(.easeInOut(duration: 0.6)) {
             camera = .region(MKCoordinateRegion(center: l.coordinate,

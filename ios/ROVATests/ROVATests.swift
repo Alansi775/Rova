@@ -1243,3 +1243,83 @@ final class RealRouteGeometryTests: XCTestCase {
         XCTAssertNil(store.realShape("NO_SUCH_PATTERN_D_D0"))
     }
 }
+
+/// Leaving the app must not end a trip that is still happening.
+///
+/// A rider pressed Start, switched away, came back, and found the trip gone —
+/// while standing on the bus. Worse than losing it: the app then offered the
+/// buses still to come, as though the one under their feet were not theirs.
+///
+/// Trip state lived in memory only, and `JourneyOption.id` is a fresh UUID on
+/// every plan, so even replanning the identical journey produced something the
+/// old state could not match. The fix is a signature made of things that do
+/// not change when the planner runs again.
+final class TripPersistenceTests: XCTestCase {
+    private var defaults: UserDefaults!
+    private var store: TripPersistence!
+
+    override func setUp() {
+        super.setUp()
+        defaults = UserDefaults(suiteName: "rova.tests.\(UUID().uuidString)")
+        store = TripPersistence(defaults: defaults)
+    }
+
+    func testATripSurvivesBeingSavedAndLoaded() {
+        let trip = TripPersistence.Saved(doorNo: "K1607", signature: "146_D_D0>A>B",
+                                         startedAt: Date(), onBoard: true)
+        store.save(trip)
+        XCTAssertEqual(store.load(), trip)
+    }
+
+    func testEndingATripForgetsIt() {
+        store.save(.init(doorNo: "K1607", signature: "s", startedAt: Date(), onBoard: false))
+        store.clear()
+        XCTAssertNil(store.load())
+    }
+
+    /// Nobody is still on a bus they boarded this morning. Restoring one would
+    /// be the app claiming to know where someone is when it does not.
+    func testAnOldTripIsNotRestored() {
+        let old = Date().addingTimeInterval(-TripPersistence.maximumAge - 60)
+        store.save(.init(doorNo: "K1607", signature: "s", startedAt: old, onBoard: true))
+        XCTAssertNil(store.load())
+    }
+
+    func testATripFromAnHourAgoIsStillRestored() {
+        let recent = Date().addingTimeInterval(-3600)
+        store.save(.init(doorNo: "K1607", signature: "s", startedAt: recent, onBoard: true))
+        XCTAssertNotNil(store.load(), "an hour into a long ride is perfectly normal")
+    }
+
+    func testNothingSavedMeansNothingRestored() {
+        XCTAssertNil(store.load())
+    }
+}
+
+/// A journey must keep its name when it is planned again.
+@MainActor
+final class JourneySignatureTests: XCTestCase {
+
+    private func leg(pattern: String, board: String, alight: String) -> JourneyLeg {
+        let b = Stop(code: board, name: board, lat: 41.0, lon: 28.9,
+                     district: "", direction: "", smart: false)
+        let a = Stop(code: alight, name: alight, lat: 41.1, lon: 28.8,
+                     district: "", direction: "", smart: false)
+        return JourneyLeg(kind: .bus, seconds: 600, distanceMetres: 4000,
+                          lineCode: "146", patternId: pattern, headsign: "",
+                          boardStop: b, alightStop: a, intermediateStops: 0, shape: [])
+    }
+
+    func testTheSameJourneyPlannedTwiceHasTheSameSignature() {
+        let a = JourneyOption(legs: [leg(pattern: "146_D_D0", board: "S1", alight: "S9")])
+        let b = JourneyOption(legs: [leg(pattern: "146_D_D0", board: "S1", alight: "S9")])
+        XCTAssertNotEqual(a.id, b.id, "ids are per-object, which is the problem")
+        XCTAssertEqual(a.signature, b.signature, "but it is the same journey")
+    }
+
+    func testADifferentJourneyHasADifferentSignature() {
+        let a = JourneyOption(legs: [leg(pattern: "146_D_D0", board: "S1", alight: "S9")])
+        let b = JourneyOption(legs: [leg(pattern: "146_D_D0", board: "S1", alight: "S4")])
+        XCTAssertNotEqual(a.signature, b.signature, "getting off elsewhere is another trip")
+    }
+}

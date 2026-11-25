@@ -178,6 +178,22 @@ struct JourneyOption: Identifiable, Hashable, Sendable {
 
     func hash(into h: inout Hasher) { h.combine(id) }
     static func == (a: JourneyOption, b: JourneyOption) -> Bool { a.id == b.id }
+
+    /// A name for this journey that survives being replanned.
+    ///
+    /// `id` is a fresh UUID on every plan, so it identifies an object, not a
+    /// journey. That is why leaving the app and coming back lost a trip that
+    /// was already under way: the restored id matched nothing, and a rider
+    /// standing on the bus was shown the buses still to come. Which pattern
+    /// you are riding, where you got on and where you get off do not change
+    /// when the planner runs again, so they are what names a trip.
+    var signature: String {
+        busLegs.map { leg in
+            [leg.patternId ?? leg.lineCode ?? "?",
+             leg.boardStop?.code ?? "?",
+             leg.alightStop?.code ?? "?"].joined(separator: ">")
+        }.joined(separator: "|")
+    }
 }
 
 /// A journey option joined with whatever live information exists right now.

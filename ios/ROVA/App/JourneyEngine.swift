@@ -192,7 +192,13 @@ final class JourneyEngine: ObservableObject {
         countdownSubject = [:]
         countdownChanged = []
         departureCache = [:]
-        if let sel = selected, !result.contains(where: { $0.id == sel.id }) { selected = nil }
+        // Re-match the chosen journey by signature, not by id. Ids are fresh
+        // on every plan, so comparing them dropped the rider's choice every
+        // single time the planner ran and silently sent them back to whichever
+        // option the app liked best.
+        if let sel = selected {
+            selected = result.first { $0.signature == sel.signature }
+        }
         isPlanning = false
         await refresh(force: true)
     }
@@ -406,6 +412,7 @@ final class JourneyEngine: ObservableObject {
             next[o.id] = (cands.first?.eta, cands.dropFirst().prefix(4).map(\.eta))
         }
         live = next
+        restoreTripIfPossible()
         holdCountdownSubjects()
         refreshMotion()
     }
@@ -618,19 +625,61 @@ final class JourneyEngine: ObservableObject {
         case arrived
     }
 
+    private let tripStore = TripPersistence()
+    /// A trip read from disk that has not been matched to a plan yet.
+    private var pendingRestore: TripPersistence.Saved?
+
     func startTrip(_ door: String) {
         tripDoorNo = door
         trackedVehicleDoorNo = door
         onBoardDoorNo = nil
         refreshMotion()
         syncSocketSubscription()
+        persistTrip()
         Haptic.success()
     }
 
+    /// The rider has arrived. Everything goes back to how it was before Start.
     func endTrip() {
         tripDoorNo = nil
         onBoardDoorNo = nil
+        trackedVehicleDoorNo = nil
+        selected = nil
+        pendingRestore = nil
+        tripStore.clear()
         refreshMotion()
+    }
+
+    private func persistTrip() {
+        guard let door = tripDoorNo, let sig = focusedJourney?.option.signature else {
+            tripStore.clear(); return
+        }
+        // Keep the original start time across saves, or a trip would look new
+        // every time the rider boards or the plan is refreshed, and would
+        // never age out.
+        let started = tripStore.load()?.startedAt ?? Date()
+        tripStore.save(.init(doorNo: door, signature: sig,
+                             startedAt: started, onBoard: onBoardDoorNo != nil))
+    }
+
+    /// Called once the planner has produced options again, to put a trip that
+    /// was already under way back on screen. Matching is by signature, because
+    /// a replanned journey is a different object but the same journey.
+    private func restoreTripIfPossible() {
+        guard tripDoorNo == nil, let saved = pendingRestore ?? tripStore.load() else { return }
+        guard let match = options.first(where: { $0.signature == saved.signature }) else {
+            // The plan has not caught up yet. Hold it rather than dropping it:
+            // the rider is still on the bus whether or not we have replanned.
+            pendingRestore = saved
+            return
+        }
+        pendingRestore = nil
+        selected = match
+        tripDoorNo = saved.doorNo
+        trackedVehicleDoorNo = saved.doorNo
+        if saved.onBoard { onBoardDoorNo = saved.doorNo }
+        refreshMotion()
+        syncSocketSubscription()
     }
 
     func board(_ door: String) {
@@ -638,11 +687,13 @@ final class JourneyEngine: ObservableObject {
         trackedVehicleDoorNo = door
         refreshMotion()
         syncSocketSubscription()
+        persistTrip()
     }
 
     func getOff() {
         onBoardDoorNo = nil
         refreshMotion()
+        persistTrip()
     }
 
     /// The leg after the one being followed, when there is one. İETT's fleet
