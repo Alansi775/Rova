@@ -190,7 +190,8 @@ final class JourneyEngine: ObservableObject {
               force: Bool = false) async {
         // Re-planning rebuilds every option, which would drop the journey the
         // user is in the middle of. While a trip is running, only an explicit
-        // action may replan.
+        // action may replan — see `planFresh`, which is what choosing a new
+        // destination calls.
         if tripDoorNo != nil && !force { return }
         plannedOrigin = from
         isPlanning = true
@@ -318,6 +319,30 @@ final class JourneyEngine: ObservableObject {
         guard let next = due.first?.0 else { return }
         await fetch(line: next)
         recompute()
+    }
+
+    /// Plan a new journey because the rider asked for one.
+    ///
+    /// Choosing a new destination ends whatever trip was running. The guard
+    /// in `plan` exists to stop the app quietly re-planning *underneath*
+    /// someone mid-ride; it was never meant to ignore a deliberate new
+    /// search, but that is what it did once trips began surviving a restart.
+    ///
+    /// The symptom was precise and maddening: arrive somewhere, set a new
+    /// destination, and no buses appear for the new route — until the app is
+    /// force-quit and reopened, which was the only thing that cleared the
+    /// finished trip. The rider found it before the code did.
+    ///
+    /// Stale vehicles from the old route are dropped too, so the map cannot
+    /// show buses belonging to a journey that is over.
+    func planFresh(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) async {
+        if tripDoorNo != nil || onBoardDoorNo != nil { endTrip() }
+        selected = nil
+        trackedVehicleDoorNo = nil
+        vehicles = [:]
+        lastFetch = [:]
+        histories = [:]
+        await plan(from: from, to: to, force: true)
     }
 
     /// What the last manual refresh actually achieved.
@@ -911,12 +936,63 @@ final class JourneyEngine: ObservableObject {
         // between two of them. Out-of-order stops mean the wrong güzergah.
         guard zip(positions, positions.dropFirst()).allSatisfy({ $0 <= $1 }) else { return nil }
 
-        // Prefer the rider's own GPS once they say they are aboard: it is
-        // theirs, it is current, and İETT's fix can be a minute behind.
-        let point = (onBoardDoorNo == door ? locationProvider?() : nil) ?? v.coordinate
+        // Whose position is the journey's position?
+        //
+        // Until the rider is on the bus, the bus's — that is the thing being
+        // waited for. Once they are on it, their own, because it is theirs,
+        // it is current, and it does not need the network.
+        //
+        // This used to depend on the rider tapping "I am on this bus", a
+        // control that has since been removed, so it never became true and
+        // every trip ran on İETT's fix. That fix can be a minute behind, and
+        // on 2026-11-26 it cost a stop: the rider reached their destination
+        // while the Lock Screen still read "two stops to go", then jumped
+        // straight to "arrived" — both warnings skipped, with nothing said.
+        //
+        // Boarding is now observed rather than declared: the rider is aboard
+        // once their own position is on the route, past the boarding stop.
+        // Nothing to press, and nothing to forget to press.
+        let riderPoint = locationProvider?()
+        let aboard = onBoardDoorNo == door
+            || isAboard(riderPoint, shape: shape, cumulative: cum,
+                        boardingAt: positions.first ?? 0)
+        let point = (aboard ? riderPoint : nil) ?? v.coordinate
+        riderIsAboard = aboard
         return TripProgressCalculator.progress(coordinate: point, shape: shape,
                                                stops: stops, stopPositions: positions)
     }
+
+    /// True while the followed journey is being driven by the rider's own GPS
+    /// rather than by İETT's fix for the vehicle.
+    @Published private(set) var riderIsAboard = false
+
+    /// Is the rider on the bus?
+    ///
+    /// Two conditions, both measured. They must be on the route — a position
+    /// a hundred metres off it belongs to someone walking a parallel street,
+    /// not riding. And they must be past the stop they board at, because
+    /// standing at that stop waiting is the one moment this must not call
+    /// boarding: the bus is still the thing to watch.
+    private func isAboard(_ here: CLLocationCoordinate2D?,
+                          shape: [CLLocationCoordinate2D],
+                          cumulative cum: [Double],
+                          boardingAt: Double) -> Bool {
+        guard let here, let snap = Geo.snap(here, to: shape),
+              snap.segment + 1 < cum.count else { return false }
+        guard snap.offset <= JourneyEngine.onRouteToleranceMetres else { return false }
+        let along = cum[snap.segment]
+            + (cum[snap.segment + 1] - cum[snap.segment]) * snap.t
+        return along >= boardingAt + JourneyEngine.boardedPastStopMetres
+    }
+
+    /// How far off the drawn route a rider may be and still count as on it.
+    /// Wide enough for GPS in a street of tall buildings, narrow enough to
+    /// exclude the pavement of the next road over.
+    static let onRouteToleranceMetres: Double = 45
+
+    /// How far past the boarding stop counts as having boarded, rather than
+    /// standing at it.
+    static let boardedPastStopMetres: Double = 60
 
     /// Buzz the rider's pocket two stops out, then one stop out.
     ///

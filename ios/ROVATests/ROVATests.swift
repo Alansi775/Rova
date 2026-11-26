@@ -1608,3 +1608,91 @@ final class ManualRefreshTests: XCTestCase {
         }
     }
 }
+
+/// Whose position the journey follows.
+///
+/// On 2026-11-26 a rider reached their destination while the Lock Screen
+/// still read "two stops to go", then jumped straight to "arrived". Both
+/// warnings were skipped and nothing was said. The cause: progress was being
+/// computed from İETT's fix for the vehicle, which can be a minute behind,
+/// because the "I am on this bus" control that switched to the rider's own
+/// GPS had been removed from the UI and so was never set.
+///
+/// Boarding is observed now, not declared. These pin the rule.
+@MainActor
+final class BoardingDetectionTests: XCTestCase {
+    private let store = TransitStore.shared
+
+    private struct Route {
+        let shape: [CLLocationCoordinate2D]
+        let cum: [Double]
+        let boardingAt: Double
+    }
+
+    private func route() throws -> Route {
+        let shape = try XCTUnwrap(store.realShape("146_D_D0"))
+        let cum = Geo.cumulative(shape)
+        // Board a little way along, so "before the stop" is expressible.
+        return Route(shape: shape, cum: cum, boardingAt: 1500)
+    }
+
+    /// Mirrors JourneyEngine.isAboard, so the rule is testable without a
+    /// location manager or a live trip.
+    private func aboard(_ here: CLLocationCoordinate2D, _ r: Route) -> Bool {
+        guard let snap = Geo.snap(here, to: r.shape), snap.segment + 1 < r.cum.count
+        else { return false }
+        guard snap.offset <= JourneyEngine.onRouteToleranceMetres else { return false }
+        let along = r.cum[snap.segment]
+            + (r.cum[snap.segment + 1] - r.cum[snap.segment]) * snap.t
+        return along >= r.boardingAt + JourneyEngine.boardedPastStopMetres
+    }
+
+    private func point(_ r: Route, atMetres m: Double) throws -> CLLocationCoordinate2D {
+        try XCTUnwrap(Geo.point(along: m, on: r.shape, cumulative: r.cum)).coordinate
+    }
+
+    /// Standing at the stop waiting is not being on the bus. This is the one
+    /// moment the rule must not fire: the bus is still the thing to watch.
+    func testWaitingAtTheBoardingStopIsNotAboard() throws {
+        let r = try route()
+        XCTAssertFalse(aboard(try point(r, atMetres: r.boardingAt), r))
+        XCTAssertFalse(aboard(try point(r, atMetres: r.boardingAt + 20), r))
+    }
+
+    func testPastTheBoardingStopIsAboard() throws {
+        let r = try route()
+        XCTAssertTrue(aboard(try point(r, atMetres: r.boardingAt + 300), r))
+        XCTAssertTrue(aboard(try point(r, atMetres: r.boardingAt + 4000), r))
+    }
+
+    /// Someone walking a parallel street is not riding. Without this, any
+    /// position near the line would hand the journey to a pedestrian's GPS.
+    func testAPositionOffTheRouteIsNotAboard() throws {
+        let r = try route()
+        let onRoute = try point(r, atMetres: r.boardingAt + 2000)
+        // Roughly 250 m away, which is another street, not GPS noise.
+        let offRoute = CLLocationCoordinate2D(latitude: onRoute.latitude + 0.00225,
+                                              longitude: onRoute.longitude + 0.00225)
+        XCTAssertGreaterThan(Geo.metres(onRoute, offRoute), 200)
+        XCTAssertFalse(aboard(offRoute, r))
+    }
+
+    /// GPS in a street of tall buildings wanders. A rider genuinely on the
+    /// bus must not be thrown off by that.
+    func testOrdinaryGPSNoiseDoesNotBreakIt() throws {
+        let r = try route()
+        let onRoute = try point(r, atMetres: r.boardingAt + 2000)
+        // ~20 m sideways.
+        let jittered = CLLocationCoordinate2D(latitude: onRoute.latitude + 0.00018,
+                                              longitude: onRoute.longitude)
+        XCTAssertLessThan(Geo.metres(onRoute, jittered), 45)
+        XCTAssertTrue(aboard(jittered, r))
+    }
+
+    /// The thresholds are a deliberate pair, not two unrelated numbers.
+    func testTheThresholdsAreSane() {
+        XCTAssertGreaterThan(JourneyEngine.boardedPastStopMetres,
+                             JourneyEngine.onRouteToleranceMetres,
+                             "a rider must clear the stop by more than GPS can wander")
+    }
+}

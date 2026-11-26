@@ -112,6 +112,13 @@ struct RootView: View {
                              originIsPinned = false
                              sheetClosedOnPurpose = true
                              sheet = false
+                             // Closing the card means "show me what is around
+                             // me". The camera used to stay wherever the last
+                             // journey had framed it — which, with the
+                             // journey's own points gone, meant a view of
+                             // most of the Marmara region and no sense of
+                             // where the rider was standing.
+                             showMyArea()
                          })
                 .environmentObject(engine)
                 .environmentObject(settings)
@@ -306,7 +313,15 @@ struct RootView: View {
         // destination means planning a journey to the Gulf of Guinea, which
         // is where latitude 0, longitude 0 is.
         guard hasBothEnds else { engine.clearJourney(); return }
-        Task { await engine.plan(from: settings.home.coordinate, to: settings.destination.coordinate) }
+        // A replan here is always the result of the rider choosing an end
+        // point, swapping the ends, or dropping a pin — never the app doing
+        // it on its own. So it is a fresh plan: it ends a finished trip and
+        // drops the previous route's vehicles, rather than being silently
+        // refused because a trip from an hour ago is still on record.
+        Task {
+            await engine.planFresh(from: settings.home.coordinate,
+                                   to: settings.destination.coordinate)
+        }
     }
 
     private func swap() {
@@ -328,6 +343,17 @@ struct RootView: View {
             else { settings.destination = p }
             Haptic.success()
             replan()
+        }
+    }
+
+    /// Frame the few streets around the rider, close enough to pick out
+    /// individual buses passing.
+    private func showMyArea() {
+        guard let here = location.current?.coordinate ?? currentCentre else { return }
+        withAnimation(.easeInOut(duration: 0.6)) {
+            camera = .region(MKCoordinateRegion(
+                center: here,
+                span: MKCoordinateSpan(latitudeDelta: 0.012, longitudeDelta: 0.012)))
         }
     }
 
