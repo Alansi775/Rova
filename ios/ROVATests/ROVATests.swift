@@ -1547,3 +1547,64 @@ final class SpokenGuidanceTests: XCTestCase {
         XCTAssertTrue(said.insert("ready").inserted)
     }
 }
+
+/// The manual refresh must never claim a bus moved when it did not.
+///
+/// İETT publishes a new position for a moving vehicle roughly every minute,
+/// so pressing refresh twice inside that window is *supposed* to return the
+/// same fix. If the button looked successful every time, it would teach the
+/// rider that a fresh-looking screen means a fresh position — the exact habit
+/// this project exists to break.
+@MainActor
+final class ManualRefreshTests: XCTestCase {
+
+    private func vehicle(_ door: String, line: String, fix: Date) -> Vehicle {
+        Vehicle(doorNo: door, lat: 41.01, lon: 28.97, lineCode: line,
+                patternId: "\(line)_D_D0", lineName: line, direction: "D",
+                lastFix: fix, nearStopCode: nil)
+    }
+
+    /// The rule the engine applies, exercised without a network.
+    private func outcome(before: Date?, after: Date?,
+                         now: Date = Date()) -> JourneyEngine.RefreshOutcome {
+        guard let after else { return .failed("That bus is no longer reporting a position.") }
+        if let before, after <= before { return .unchanged }
+        return .newer(seconds: Int(now.timeIntervalSince(after)))
+    }
+
+    func testTheSameFixIsReportedAsUnchanged() {
+        let fix = Date().addingTimeInterval(-30)
+        XCTAssertEqual(outcome(before: fix, after: fix), .unchanged,
+                       "İETT has not published again; that is not an update")
+    }
+
+    func testAnOlderFixIsNotCalledNewer() {
+        // Position history can arrive out of order. Older is never progress.
+        let newer = Date().addingTimeInterval(-20)
+        let older = Date().addingTimeInterval(-90)
+        XCTAssertEqual(outcome(before: newer, after: older), .unchanged)
+    }
+
+    func testAGenuinelyNewerFixIsReportedWithItsAge() {
+        let before = Date().addingTimeInterval(-120)
+        let after = Date().addingTimeInterval(-15)
+        guard case .newer(let seconds) = outcome(before: before, after: after) else {
+            return XCTFail("a newer fix must be reported as newer")
+        }
+        XCTAssertEqual(seconds, 15, accuracy: 2,
+                       "the age reported is the fix's age, not the time since the tap")
+    }
+
+    func testAVanishedVehicleIsReportedAsAFailure() {
+        guard case .failed = outcome(before: Date(), after: nil) else {
+            return XCTFail("a bus that stopped reporting is not a successful refresh")
+        }
+    }
+
+    /// A first refresh with nothing to compare against is still an update.
+    func testTheFirstFixCountsAsNewer() {
+        guard case .newer = outcome(before: nil, after: Date().addingTimeInterval(-5)) else {
+            return XCTFail("the first position seen is new information")
+        }
+    }
+}

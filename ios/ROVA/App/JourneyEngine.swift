@@ -320,6 +320,44 @@ final class JourneyEngine: ObservableObject {
         recompute()
     }
 
+    /// What the last manual refresh actually achieved.
+    ///
+    /// Shown next to the button, because a refresh that returns the same fix
+    /// is the normal case and must not look like a failure — or, worse, like
+    /// a success. İETT publishes a new position for a moving vehicle about
+    /// every 60 seconds; pressing the button twice inside that window is
+    /// supposed to produce nothing new, and the app should say so rather than
+    /// re-render the same numbers and let the rider conclude the bus moved.
+    enum RefreshOutcome: Equatable {
+        case idle
+        case working
+        case newer(seconds: Int)     // a genuinely newer fix arrived
+        case unchanged              // İETT has nothing newer yet
+        case failed(String)
+    }
+
+    @Published private(set) var manualRefresh: RefreshOutcome = .idle
+
+    /// Refresh the followed vehicle on demand.
+    func refreshTrackedVehicle() async {
+        guard let door = trackedVehicleDoorNo ?? tripDoorNo,
+              let line = vehicle(doorNo: door)?.lineCode else { return }
+        let before = vehicle(doorNo: door)?.lastFix
+        manualRefresh = .working
+        await fetch(line: line, force: true)
+        recompute()
+
+        guard let after = vehicle(doorNo: door)?.lastFix else {
+            manualRefresh = .failed("That bus is no longer reporting a position.")
+            return
+        }
+        if let before, after <= before {
+            manualRefresh = .unchanged
+        } else {
+            manualRefresh = .newer(seconds: Int(Date().timeIntervalSince(after)))
+        }
+    }
+
     func refresh(force: Bool = false) async {
         isRefreshing = true
         defer { isRefreshing = false }

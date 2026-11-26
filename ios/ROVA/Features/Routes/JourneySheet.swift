@@ -137,6 +137,13 @@ struct HeroCard: View {
                         .lineLimit(1)
                     Spacer(minLength: 0)
                     StatePill(state: state, compact: true)
+                    // Only once a specific bus is being followed: refreshing
+                    // "the line" is the poller's job, and a button that
+                    // refreshes something the rider has not pointed at would
+                    // spend İETT's quota on their behalf without asking.
+                    if engine.trackedVehicleDoorNo != nil {
+                        RefreshVehicleButton()
+                    }
                 }
 
                 if let eta = journey.eta {

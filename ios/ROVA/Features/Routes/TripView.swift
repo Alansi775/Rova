@@ -46,6 +46,7 @@ struct TripView: View {
                     Spacer(minLength: 0)
                     if let v = engine.tripDoorNo.flatMap({ engine.vehicle(doorNo: $0) }) {
                         StatePill(state: .forFix(age: v.fixAge), compact: true)
+                        RefreshVehicleButton()
                     }
                 }
 
