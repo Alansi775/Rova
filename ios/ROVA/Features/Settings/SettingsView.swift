@@ -1,11 +1,21 @@
 import SwiftUI
 
 struct SettingsView: View {
+    /// Mirrors SpokenGuidance's own stored setting so the toggle can bind to
+    /// it, and plays a sample the moment it is switched on: nobody should
+    /// have to board a bus to find out what an app is about to say into
+    /// their music.
+    @State private var speakStops = SpokenGuidance.shared.isEnabled
     @EnvironmentObject var settings: Settings
     @EnvironmentObject var engine: JourneyEngine
     @Environment(\.dismiss) private var dismiss
 
     private let store = TransitStore.shared
+
+    private func applySpokenSetting(_ on: Bool) {
+        SpokenGuidance.shared.isEnabled = on
+        if on { SpokenGuidance.shared.demonstrate() }
+    }
 
     var body: some View {
         NavigationStack {
@@ -44,6 +54,19 @@ struct SettingsView: View {
                     Stepper("Notify \(settings.notifyBeforeMinutes) min before",
                             value: $settings.notifyBeforeMinutes, in: 2...20)
                 } header: { Text("Notifications") }
+
+                Section {
+                    Toggle("Say the stop out loud", isOn: $speakStops)
+                        .onChange(of: speakStops) { _, on in applySpokenSetting(on) }
+                    if speakStops {
+                        Button("Hear what it sounds like") {
+                            SpokenGuidance.shared.demonstrate()
+                        }
+                    }
+                } header: { Text("Headphones") }
+                  footer: {
+                      Text("With headphones in and the phone in a pocket, ROVA lowers your music, plays a short chime and says the stop — two stops before you get off, then again on the one before, then at your stop. It speaks only when it can actually see where the bus is; a lost signal means silence, never a guess.")
+                  }
 
                 Section {
                     Toggle("Use ROVA backend", isOn: $settings.useBackend)

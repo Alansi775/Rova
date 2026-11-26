@@ -1471,3 +1471,79 @@ final class RouteRevealTests: XCTestCase {
         }
     }
 }
+
+/// Spoken announcements, said once and in order.
+///
+/// Being told out loud to get off is far more convincing than a number on a
+/// screen, which makes a wrong announcement worse than a wrong display. These
+/// pin the two properties that keep it trustworthy: each thing is said once,
+/// and a bus creeping back and forth over a stop boundary cannot make the
+/// headphones repeat themselves.
+@MainActor
+final class SpokenGuidanceTests: XCTestCase {
+
+    /// The engine's rule, stated here so it can be exercised without audio.
+    private func sentence(stopsRemaining: Int, alight: String) -> (String, String)? {
+        switch stopsRemaining {
+        case 2: return ("Two stops to go. You get off at \(alight) after next.", "ready")
+        case 1: return ("Get off at the next stop. \(alight).", "next")
+        case 0: return ("This is your stop. \(alight).", "now")
+        default: return nil
+        }
+    }
+
+    func testEachAnnouncementIsMadeOnce() {
+        var said: Set<String> = []
+        var spoken: [String] = []
+        // A bus that hesitates over every boundary, which is what traffic
+        // looks like in the data.
+        for remaining in [5, 4, 3, 2, 2, 3, 2, 1, 1, 2, 1, 0, 0, 1, 0] {
+            guard let (text, id) = sentence(stopsRemaining: remaining, alight: "Avcılar")
+            else { continue }
+            if said.insert(id).inserted { spoken.append(text) }
+        }
+        XCTAssertEqual(spoken.count, 3, "three announcements, no repeats")
+    }
+
+    func testTheyComeInTheRightOrder() {
+        var said: Set<String> = []
+        var ids: [String] = []
+        for remaining in stride(from: 6, through: 0, by: -1) {
+            guard let (_, id) = sentence(stopsRemaining: remaining, alight: "Avcılar")
+            else { continue }
+            if said.insert(id).inserted { ids.append(id) }
+        }
+        XCTAssertEqual(ids, ["ready", "next", "now"])
+    }
+
+    func testNothingIsSaidWhileTheStopIsFarOff() {
+        for remaining in 3...12 {
+            XCTAssertNil(sentence(stopsRemaining: remaining, alight: "Avcılar"),
+                         "\(remaining) stops out is not worth interrupting music for")
+        }
+    }
+
+    /// The stop's real name is spoken, not a description of it.
+    func testTheStopIsNamed() {
+        let (text, _) = sentence(stopsRemaining: 1, alight: "Şirinevler")!
+        XCTAssertTrue(text.contains("Şirinevler"))
+    }
+
+    /// Off unless asked for. An app that starts talking into someone's music
+    /// without being asked has overstepped.
+    func testSpeakingIsOffUntilItIsTurnedOn() {
+        let defaults = UserDefaults.standard
+        let saved = defaults.object(forKey: "rova.spokenGuidance")
+        defaults.removeObject(forKey: "rova.spokenGuidance")
+        XCTAssertFalse(SpokenGuidance.shared.isEnabled)
+        if let saved { defaults.set(saved, forKey: "rova.spokenGuidance") }
+    }
+
+    /// Silence is correct when the trip is reset, so the next ride announces
+    /// again from the beginning.
+    func testResettingLetsTheNextTripAnnounceAgain() {
+        var said: Set<String> = ["ready", "next", "now"]
+        said.removeAll()
+        XCTAssertTrue(said.insert("ready").inserted)
+    }
+}

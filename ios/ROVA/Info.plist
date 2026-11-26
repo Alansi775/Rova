@@ -2,6 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- The whole point of the spoken stop announcements is that the phone is
+	     in a pocket with the screen off. Without the audio background mode the
+	     speech is simply never heard, which is worse than not offering it:
+	     a rider would be relying on something that silently does not run.
+	     `location` keeps the ride being tracked while that is true. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>location</string>
+	</array>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
   <key>CFBundleDevelopmentRegion</key><string>en</string>

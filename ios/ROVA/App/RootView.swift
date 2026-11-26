@@ -188,6 +188,14 @@ struct RootView: View {
                 location.request()
                 NotificationCenterService.shared.requestAuthorization()
             }
+            engine.locationProvider = { location.current?.coordinate }
+            // Raise location tracking for the duration of a ride, so the app
+            // keeps computing progress while the rider is in another app —
+            // which is the normal case on a bus, not the exception.
+            engine.onTripRunningChanged = { running in
+                if running { location.beginBackgroundTracking() }
+                else { location.endBackgroundTracking() }
+            }
             await engine.applyBackend(settings.effectiveBackend)
             adoptCurrentLocation()
             replan()

@@ -649,6 +649,8 @@ final class JourneyEngine: ObservableObject {
         syncSocketSubscription()
         persistTrip()
         NotificationCenterService.shared.resetTripWarnings()
+        SpokenGuidance.shared.resetTrip()
+        onTripRunningChanged?(true)
         Haptic.success()
     }
 
@@ -661,6 +663,8 @@ final class JourneyEngine: ObservableObject {
         pendingRestore = nil
         tripStore.clear()
         NotificationCenterService.shared.resetTripWarnings()
+        SpokenGuidance.shared.resetTrip()
+        onTripRunningChanged?(false)
         Task { await TripActivityController.shared.end() }
         refreshMotion()
     }
@@ -693,6 +697,7 @@ final class JourneyEngine: ObservableObject {
         tripDoorNo = saved.doorNo
         trackedVehicleDoorNo = saved.doorNo
         if saved.onBoard { onBoardDoorNo = saved.doorNo }
+        onTripRunningChanged?(true)
         refreshMotion()
         syncSocketSubscription()
     }
@@ -889,11 +894,34 @@ final class JourneyEngine: ObservableObject {
         // that, "two stops to go" is about a bus they are not on yet.
         guard tripPhase == .riding else { return }
         updateLiveActivity(progress: p, leg: leg, alight: alight)
+        speakAlightWarnings(progress: p, alight: alight)
         NotificationCenterService.shared.updateAlightWarnings(
             stopsRemaining: p.stopsRemaining,
             nextStopName: p.nextStop?.name ?? alight.name,
             alightStopName: alight.name,
             lineCode: leg.lineCode ?? "")
+    }
+
+    /// Say the stop out loud, for a rider with headphones in and the phone
+    /// in a pocket.
+    ///
+    /// Driven by the same measured progress as the Lock Screen and the
+    /// notification, so the three can never disagree — and so a stale fix
+    /// silences all of them together rather than leaving a confident voice
+    /// naming a stop nobody is near.
+    private func speakAlightWarnings(progress p: TripProgress, alight: Stop) {
+        let voice = SpokenGuidance.shared
+        switch p.stopsRemaining {
+        case 2:
+            voice.announce("Two stops to go. You get off at \(alight.name) after next.",
+                           id: "ready")
+        case 1:
+            voice.announce("Get off at the next stop. \(alight.name).", id: "next")
+        case 0:
+            voice.announce("This is your stop. \(alight.name).", id: "now")
+        default:
+            break
+        }
     }
 
     /// Keep the Lock Screen in step with the ride.
@@ -920,6 +948,11 @@ final class JourneyEngine: ObservableObject {
     /// Supplies the rider's own position while aboard. Injected so the engine
     /// stays testable without CoreLocation.
     var locationProvider: (() -> CLLocationCoordinate2D?)?
+
+    /// Called when a trip starts and ends, so location tracking can be raised
+    /// for the ride and dropped afterwards. Injected rather than referenced
+    /// directly so the engine stays testable without CoreLocation.
+    var onTripRunningChanged: ((Bool) -> Void)?
 
     private var onBoardLeg: JourneyLeg? {
         guard onBoardDoorNo != nil else { return nil }
