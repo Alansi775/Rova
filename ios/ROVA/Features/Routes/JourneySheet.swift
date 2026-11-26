@@ -53,21 +53,30 @@ struct JourneySheet: View {
                     if detent != .height(280), let p = primary {
                         JourneyDetail(journey: p)
                     }
-                } else if let p = primary {
-                    HeroCard(journey: p, now: now, expanded: detent != .height(280))
-                        .onTapGesture {
-                            Haptic.tap()
-                            // Opening the stop list also puts the bus on the
-                            // map. "Which stops does it call at" and "where
-                            // is it right now" are the same curiosity.
-                            if let d = p.eta?.vehicleDoorNo { engine.selectVehicle(d) }
-                            preview = p
-                        }
-                    if detent != .height(280) {
+                } else if !engine.busCards.isEmpty {
+                    // One card per bus, soonest first, tied to the map. This
+                    // replaced a single "best journey" hero plus a list of
+                    // alternatives: a rider at a stop is choosing between
+                    // buses, not between itineraries, and the old shape hid a
+                    // bus on another line that would have arrived first.
+                    BusCarousel(now: now) { card in
+                        engine.choose(card)
+                        engine.startTrip(card.doorNo)
+                        detent = .height(280)
+                        onFrame()
+                    }
+                    .padding(.horizontal, -RV.Space.l)   // cards bleed to the edges
+
+                    if detent != .height(280), let p = primary {
                         JourneyDetail(journey: p)
                     }
-                    OtherOptions(current: p) { j in
-                        preview = j
+                } else if let p = primary {
+                    // No vehicle is reporting on any option: the timetable is
+                    // all there is, and it is labelled as such.
+                    HeroCard(journey: p, now: now, expanded: detent != .height(280))
+                        .onTapGesture { Haptic.tap(); preview = p }
+                    if detent != .height(280) {
+                        JourneyDetail(journey: p)
                     }
                 }
                 FooterNote()

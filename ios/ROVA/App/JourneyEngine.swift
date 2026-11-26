@@ -321,6 +321,54 @@ final class JourneyEngine: ObservableObject {
         recompute()
     }
 
+    /// One card per bus that can actually take the rider there.
+    ///
+    /// The map and the planner used to disagree about what counted. A rider
+    /// watched a bus pull in that would have got him to Avcılar sooner than
+    /// the one on screen — a different line, serving the same destination,
+    /// which the app never offered because it ranked whole *journeys* and
+    /// showed the best one. From the pavement there is no such thing as a
+    /// journey: there are buses, and one of them is coming first.
+    ///
+    /// So every catchable vehicle across every option is listed, soonest
+    /// first, deduplicated by door number. A bus too soon to walk to is kept
+    /// rather than hidden, because "that one is leaving without you" is
+    /// useful information — `isReachable` says which.
+    struct BusCard: Identifiable, Equatable {
+        let doorNo: String
+        let lineCode: String
+        let eta: ETA
+        let option: JourneyOption
+        /// Seconds needed to reach the boarding stop on foot.
+        let walkSeconds: Int
+        var id: String { doorNo }
+
+        /// Can the rider still make it to the stop before this one leaves?
+        var isReachable: Bool { eta.predictedMinutes * 60 >= Double(walkSeconds) - 60 }
+    }
+
+    var busCards: [BusCard] {
+        var seen = Set<String>()
+        var out: [BusCard] = []
+        for j in journeys {
+            for eta in j.allETAs {
+                guard let door = eta.vehicleDoorNo, seen.insert(door).inserted else { continue }
+                out.append(BusCard(doorNo: door, lineCode: eta.lineCode, eta: eta,
+                                   option: j.option, walkSeconds: j.walkToStopSeconds))
+            }
+        }
+        return out.sorted { $0.eta.predictedMinutes < $1.eta.predictedMinutes }
+    }
+
+    /// Follow the bus on a card: it becomes the tracked vehicle, and its
+    /// journey becomes the selected one, so the map draws the right route.
+    func choose(_ card: BusCard) {
+        if selected?.signature != card.option.signature { selected = card.option }
+        trackedVehicleDoorNo = card.doorNo
+        refreshMotion()
+        syncSocketSubscription()
+    }
+
     /// Plan a new journey because the rider asked for one.
     ///
     /// Choosing a new destination ends whatever trip was running. The guard

@@ -1696,3 +1696,73 @@ final class BoardingDetectionTests: XCTestCase {
                              "a rider must clear the stop by more than GPS can wander")
     }
 }
+
+/// One card per bus, soonest first.
+///
+/// A rider watched a bus pull in that would have got him to Avcılar sooner
+/// than the one the app was showing — a different line, same destination,
+/// never offered. The app ranked whole journeys and displayed the best one.
+/// From a pavement there is no such thing as a journey: there are buses, and
+/// one of them is coming first.
+@MainActor
+final class BusCardTests: XCTestCase {
+
+    private func eta(_ door: String, line: String, minutes: Double) -> ETA {
+        ETA(vehicleDoorNo: door, lineCode: line, patternId: "\(line)_D_D0",
+            predictedMinutes: minutes,
+            rangeMinutes: (minutes - 1)...(minutes + 2),
+            lastFixAge: 30, confidence: .high, lowConfidenceReason: nil,
+            state: .liveGPS(age: 30), remainingMetres: minutes * 300, stopsAway: Int(minutes / 2))
+    }
+
+    private func card(_ door: String, line: String, minutes: Double,
+                      walk: Int) -> JourneyEngine.BusCard {
+        let stop = Stop(code: "S1", name: "S1", lat: 41.0, lon: 28.9,
+                        district: "", direction: "", smart: false)
+        let leg = JourneyLeg(kind: .bus, seconds: 600, distanceMetres: 4000,
+                             lineCode: line, patternId: "\(line)_D_D0", headsign: "",
+                             boardStop: stop, alightStop: stop,
+                             intermediateStops: 5, shape: [])
+        return JourneyEngine.BusCard(doorNo: door, lineCode: line,
+                                     eta: eta(door, line: line, minutes: minutes),
+                                     option: JourneyOption(legs: [leg]),
+                                     walkSeconds: walk)
+    }
+
+    func testCardsAreOrderedByWhenTheBusArrives() {
+        let unsorted = [card("A", line: "146", minutes: 12, walk: 300),
+                        card("B", line: "34G", minutes: 4, walk: 300),
+                        card("C", line: "142", minutes: 8, walk: 300)]
+        let sorted = unsorted.sorted { $0.eta.predictedMinutes < $1.eta.predictedMinutes }
+        XCTAssertEqual(sorted.map(\.doorNo), ["B", "C", "A"],
+                       "the bus arriving first is the first card")
+    }
+
+    /// Different lines serving the same destination must all appear. This is
+    /// the bug: the faster bus was on another line and so was never shown.
+    func testBusesOnDifferentLinesBothAppear() {
+        let cards = [card("A", line: "146", minutes: 9, walk: 200),
+                     card("B", line: "34G", minutes: 3, walk: 200)]
+        XCTAssertEqual(Set(cards.map(\.lineCode)), ["146", "34G"])
+    }
+
+    /// A bus too soon to walk to is kept, not hidden: "that one is leaving
+    /// without you" is what stops a rider running for it.
+    func testAnUnreachableBusIsKeptButMarked() {
+        let tooSoon = card("A", line: "146", minutes: 1, walk: 600)   // 10 min walk
+        XCTAssertFalse(tooSoon.isReachable)
+        let fine = card("B", line: "146", minutes: 12, walk: 600)
+        XCTAssertTrue(fine.isReachable)
+    }
+
+    /// A minute of slack, because a rider who jogs the last stretch makes it
+    /// and an app that says otherwise is wrong in the unhelpful direction.
+    func testTheWalkAllowanceHasAMinuteOfSlack() {
+        let exactly = card("A", line: "146", minutes: 5, walk: 360)  // 6 min walk
+        XCTAssertTrue(exactly.isReachable, "five minutes against a six-minute walk is close enough")
+    }
+
+    func testCardsAreIdentifiedByDoorNumber() {
+        XCTAssertEqual(card("B2249", line: "146", minutes: 5, walk: 100).id, "B2249")
+    }
+}
