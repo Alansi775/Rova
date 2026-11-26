@@ -92,7 +92,9 @@ struct RoutePreview: View {
         .opacity(isLive ? 1 : 0.45)
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .background(.bar)
+        // No `.background(.bar)`. The button is already glass; putting an
+        // opaque bar behind it drew a grey slab across the bottom of the
+        // screen whose edges belonged to nothing on it.
     }
 }
 

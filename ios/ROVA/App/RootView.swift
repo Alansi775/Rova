@@ -27,6 +27,8 @@ struct RootView: View {
     /// dropping a pin, or swapping the ends. It stays set until they ask to
     /// start from their location again.
     @State private var originIsPinned = false
+    /// The endpoint being searched for while the journey card is hidden.
+    @State private var searchFromMap: EndpointEdit?
 
     enum EndpointEdit: Identifiable { case origin, destination
         var id: Int { self == .origin ? 0 : 1 } }
@@ -82,6 +84,12 @@ struct RootView: View {
         // settings are presented *by* the journey sheet instead: two `.sheet`
         // modifiers on the same view fight each other, which is what made the
         // journey card disappear for good after a search.
+        .sheet(item: $searchFromMap) { which in
+            SearchView(title: which == .origin ? "Starting point" : "Destination") { place in
+                placeChosenFromMap(which, place)
+            }
+            .environmentObject(location)
+        }
         .sheet(isPresented: $sheet) {
             JourneySheet(detent: $detent, onFrame: frameJourney,
                          editing: $editing, showSettings: $showSettings,
@@ -118,7 +126,12 @@ struct RootView: View {
                 // hard to pull up and hard to put back down: the gesture was
                 // scrolling content that had nowhere to scroll.
                 .presentationContentInteraction(.resizes)
-                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+                // Must name a detent this sheet actually has. It still said
+                // `.medium` after the detents changed to 130/280/large, and a
+                // threshold the sheet never reaches disables background
+                // interaction altogether — which is why the map went dead
+                // under the card.
+                .presentationBackgroundInteraction(.enabled(upThrough: .height(280)))
                 .presentationDragIndicator(.visible)
                 .presentationCornerRadius(28)
                 .interactiveDismissDisabled()
@@ -246,28 +259,45 @@ struct RootView: View {
         }
     }
 
-    /// Open the place search, bringing the card back if it was closed.
+    /// Open the place search.
     ///
-    /// The search field sits above the map and is always tappable, but the
-    /// search screen is presented *by* the journey card — two `.sheet`
-    /// modifiers on one view fight each other, which is why it was built that
-    /// way. So with the card hidden, tapping the field did nothing at all.
+    /// With the card showing, the card presents it, because two `.sheet`
+    /// modifiers on one view fight each other. With the card hidden there is
+    /// no card to present from, so this view does it instead — and the two
+    /// cases never overlap, because the card being hidden is exactly when
+    /// this path is used.
     ///
-    /// Hiding the card means "I am not going anywhere right now". Searching
-    /// means the opposite, so it brings the card back and the chosen journey
-    /// appears in it.
+    /// The card does *not* come back on the first pick. Setting only where
+    /// you are leaving from is not a journey, and a card appearing with half
+    /// an answer in it was worse than no card: it showed routes from the new
+    /// origin to a destination the rider had already cleared.
     private func beginSearch(_ which: EndpointEdit) {
-        if !sheet {
-            sheetClosedOnPurpose = false
-            sheet = true
-            // Let the sheet finish presenting before presenting from it.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { editing = which }
-        } else {
-            editing = which
-        }
+        if sheet { editing = which } else { searchFromMap = which }
+    }
+
+    /// A place was chosen while the card was hidden.
+    private func placeChosenFromMap(_ which: EndpointEdit, _ place: Place) {
+        if which == .origin { settings.home = place; originIsPinned = true }
+        else { settings.destination = place }
+        searchFromMap = nil
+        Haptic.success()
+        // Both ends, or nothing. One without the other is not a journey.
+        guard hasBothEnds else { return }
+        replan()
+        sheetClosedOnPurpose = false
+        sheet = true
+    }
+
+    /// True once there is somewhere to leave from and somewhere to go.
+    private var hasBothEnds: Bool {
+        !settings.home.name.isEmpty && !settings.destination.name.isEmpty
     }
 
     private func replan() {
+        // Nothing to plan without both ends. Planning to a cleared
+        // destination means planning a journey to the Gulf of Guinea, which
+        // is where latitude 0, longitude 0 is.
+        guard hasBothEnds else { engine.clearJourney(); return }
         Task { await engine.plan(from: settings.home.coordinate, to: settings.destination.coordinate) }
     }
 
@@ -421,7 +451,9 @@ struct TopBar: View {
                 row(dot: AnyView(Circle().strokeBorder(RV.Color.inkMuted, lineWidth: 2.5).frame(width: 10, height: 10)),
                     text: origin, action: onEditOrigin)
                 row(dot: AnyView(RoundedRectangle(cornerRadius: 2).fill(RV.Color.accent).frame(width: 10, height: 10)),
-                    text: destination, action: onEditDestination)
+                    text: destination.isEmpty ? "Where to?" : destination,
+                    muted: destination.isEmpty,
+                    action: onEditDestination)
             }
 
             VStack(spacing: RV.Space.s) {
@@ -443,11 +475,13 @@ struct TopBar: View {
         .accessibilityLabel(label)
     }
 
-    private func row(dot: AnyView, text: String, action: @escaping () -> Void) -> some View {
+    private func row(dot: AnyView, text: String, muted: Bool = false,
+                     action: @escaping () -> Void) -> some View {
         Button(action: { Haptic.tap(); action() }) {
             HStack(spacing: RV.Space.m) {
                 dot.frame(width: 10)
                 Text(text).font(.rvHeadline)
+                    .opacity(muted ? 0.45 : 1)
                     .lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 0)
                 // Says, without a word of instruction, that this is a field
