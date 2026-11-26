@@ -27,7 +27,11 @@ struct BusCarousel: View {
             LazyHStack(spacing: RV.Space.m) {
                 ForEach(cards) { card in
                     BusCardView(card: card, now: now, onStart: { onStart(card) })
-                        .containerRelativeFrame(.horizontal, count: 1, spacing: RV.Space.m)
+                        // 86 % of the width, so the next bus shows at the
+                        // edge. A full-width card reads as a panel and hides
+                        // that there is anything to swipe to; the sliver of
+                        // the neighbour is the whole invitation.
+                        .containerRelativeFrame(.horizontal) { width, _ in width * 0.86 }
                         .scrollTransition(axis: .horizontal) { content, phase in
                             // The neighbours sit back a little, so the one in
                             // the middle is unmistakably the one being
@@ -40,14 +44,13 @@ struct BusCarousel: View {
                 }
             }
             .scrollTargetLayout()
-            // Enough inset that the cards either side peek in at the edges.
-            .padding(.horizontal, RV.Space.l)
+            .padding(.horizontal, RV.Space.m)
         }
         .scrollTargetBehavior(.viewAligned)
         .scrollPosition(id: $centred)
         .scrollIndicators(.hidden)
         .sensoryFeedback(.selection, trigger: centred)
-        .frame(height: 188)
+        .frame(height: 176)
         // Swiped here → the map goes to that bus.
         .onChange(of: centred) { _, door in
             guard let door, let card = cards.first(where: { $0.doorNo == door }) else { return }
@@ -91,6 +94,22 @@ private struct BusCardView: View {
 
             countdown
 
+            // When the journey needs a change, the card says so here rather
+            // than letting the rider discover it at the alighting stop. The
+            // second leg is a timetable until its own bus is close enough to
+            // be tracked, so it is given as a line and a place, never as a
+            // confident second countdown.
+            if let change = transfer {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.triangle.swap")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(change)
+                        .font(.rvCaption)
+                        .lineLimit(2)
+                }
+                .foregroundStyle(RV.Color.inkMuted)
+            }
+
             Button("Start", systemImage: "location.north.fill", action: onStart)
                 .buttonStyle(.glassProminent)
                 .tint(RV.Color.ink)
@@ -104,6 +123,18 @@ private struct BusCardView: View {
         .background(RV.Color.cardFill,
                     in: RoundedRectangle(cornerRadius: RV.Radius.m, style: .continuous))
         .shadow(color: .black.opacity(0.08), radius: 12, y: 4)
+    }
+
+    /// "Change at X to the 34G" — nil for a direct ride.
+    private var transfer: String? {
+        let legs = card.option.busLegs
+        guard legs.count > 1, let second = legs.dropFirst().first,
+              let at = legs.first?.alightStop?.name,
+              let line = second.lineCode else { return nil }
+        if let final = second.alightStop?.name {
+            return "Change at \(at) to the \(line), off at \(final)"
+        }
+        return "Change at \(at) to the \(line)"
     }
 
     @ViewBuilder

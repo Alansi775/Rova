@@ -53,24 +53,10 @@ struct JourneySheet: View {
                     if detent != .height(280), let p = primary {
                         JourneyDetail(journey: p)
                     }
-                } else if !engine.busCards.isEmpty {
-                    // One card per bus, soonest first, tied to the map. This
-                    // replaced a single "best journey" hero plus a list of
-                    // alternatives: a rider at a stop is choosing between
-                    // buses, not between itineraries, and the old shape hid a
-                    // bus on another line that would have arrived first.
-                    BusCarousel(now: now) { card in
-                        engine.choose(card)
-                        engine.startTrip(card.doorNo)
-                        detent = .height(280)
-                        onFrame()
-                    }
-                    .padding(.horizontal, -RV.Space.l)   // cards bleed to the edges
-
-                    if detent != .height(280), let p = primary {
-                        JourneyDetail(journey: p)
-                    }
                 } else if let p = primary {
+                    // The bus cards are not here: they float over the map, so
+                    // the rider can watch the road while choosing. This panel
+                    // belongs to a trip in progress.
                     // No vehicle is reporting on any option: the timetable is
                     // all there is, and it is labelled as such.
                     HeroCard(journey: p, now: now, expanded: detent != .height(280))
@@ -700,7 +686,16 @@ struct EmptyState: View {
         RVCard {
             VStack(alignment: .leading, spacing: RV.Space.s) {
                 Text("No bus journey found").font(.rvHeadline)
-                Text("ROVA could not connect these two points with the İETT network. Try moving the start or destination closer to a road served by buses.")
+                // Say which limit was hit, rather than "try something else".
+                // A rider who set a stop across the Bosphorus is not making a
+                // mistake they can fix by nudging a pin — there is genuinely
+                // no bus-only route with one change, because crossing needs
+                // the Metrobüs, the metro or a ferry. Measured, not guessed:
+                // the stops reachable from the origin and those serving the
+                // destination have no stop in common at all.
+                Text(engine.plansOneChangeOnly
+                     ? "ROVA plans direct rides and journeys with one change. These two points need more than that — crossing the city usually means the Metrobüs, the metro or a ferry, which ROVA does not yet route through."
+                     : "ROVA could not connect these two points with the İETT network. Try moving the start or destination closer to a road served by buses.")
                     .font(.rvBody).foregroundStyle(RV.Color.inkMuted)
             }
         }

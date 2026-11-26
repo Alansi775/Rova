@@ -29,6 +29,12 @@ struct RootView: View {
     @State private var originIsPinned = false
     /// The endpoint being searched for while the journey card is hidden.
     @State private var searchFromMap: EndpointEdit?
+    /// The tall panel. It belongs to a trip in progress — the stop list, the
+    /// progress bar, End — and to nothing else.
+    private var tallSheet: Binding<Bool> {
+        Binding(get: { sheet && engine.tripDoorNo != nil },
+                set: { if !$0 { sheet = false } })
+    }
 
     enum EndpointEdit: Identifiable { case origin, destination
         var id: Int { self == .origin ? 0 : 1 } }
@@ -90,7 +96,16 @@ struct RootView: View {
             }
             .environmentObject(location)
         }
-        .sheet(isPresented: $sheet) {
+        // Before a trip starts, the buses float over the map rather than
+        // living inside a panel. A rider choosing between buses is reading
+        // the map at the same time — which road the bus is on, how far round
+        // the corner it is — and a sheet tall enough to hold a card covered
+        // exactly the part they were looking at. Cards, with the map showing
+        // between and below them.
+        .safeAreaInset(edge: .bottom) { floatingCards }
+        .animation(.spring(response: 0.4, dampingFraction: 0.88),
+                   value: engine.tripDoorNo)
+        .sheet(isPresented: tallSheet) {
             JourneySheet(detent: $detent, onFrame: frameJourney,
                          editing: $editing, showSettings: $showSettings,
                          onPlaceChosen: { which, place in
@@ -343,6 +358,21 @@ struct RootView: View {
             else { settings.destination = p }
             Haptic.success()
             replan()
+        }
+    }
+
+    /// The bus cards, floating over the map.
+    @ViewBuilder
+    private var floatingCards: some View {
+        if sheet, engine.tripDoorNo == nil, !engine.busCards.isEmpty {
+            BusCarousel(now: Date()) { card in
+                engine.choose(card)
+                engine.startTrip(card.doorNo)
+                detent = .height(280)
+                frameJourney()
+            }
+            .padding(.bottom, RV.Space.m)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
 

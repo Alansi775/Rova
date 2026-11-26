@@ -321,6 +321,13 @@ final class JourneyEngine: ObservableObject {
         recompute()
     }
 
+    /// True when the planner found nothing because the journey needs more
+    /// than one change — which is a different answer from "nowhere near a
+    /// bus stop", and deserves a different sentence.
+    var plansOneChangeOnly: Bool {
+        options.isEmpty && plannedOrigin != nil
+    }
+
     /// One card per bus that can actually take the rider there.
     ///
     /// The map and the planner used to disagree about what counted. A rider

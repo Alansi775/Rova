@@ -1766,3 +1766,73 @@ final class BusCardTests: XCTestCase {
         XCTAssertEqual(card("B2249", line: "146", minutes: 5, walk: 100).id, "B2249")
     }
 }
+
+/// A destination no single bus reaches must still be planned.
+///
+/// A rider set a far-off stop and was offered nothing useful. Google Maps
+/// answers that case with a chain — walk to this stop, take this bus, change
+/// there, take that one — and so must this.
+@MainActor
+final class TransferPlanningTests: XCTestCase {
+    private let store = TransitStore.shared
+    private lazy var planner = JourneyPlanner(store: store)
+
+    private let home = CLLocationCoordinate2D(latitude: 41.0056, longitude: 28.6760)
+    /// Şişli: far — 26 km — but on the same side of the Bosphorus, so a
+    /// bus-only journey with one change genuinely exists.
+    private let farSide = CLLocationCoordinate2D(latitude: 41.0602, longitude: 28.9870)
+
+    /// Kadıköy, across the water. Measured, not assumed: of the 1 278 stops
+    /// reachable from the origin and the 2 210 serving this point, *none* is
+    /// shared. There is no bus-only route with one change, because crossing
+    /// needs the Metrobüs, the metro or a ferry. An earlier version of this
+    /// file asserted a journey must exist here; the assertion was wrong, not
+    /// the planner.
+    private let acrossTheWater = CLLocationCoordinate2D(latitude: 40.9900, longitude: 29.0250)
+
+    func testAFarDestinationStillProducesAJourney() {
+        let options = planner.plan(from: home, to: farSide, limit: 6)
+        XCTAssertFalse(options.isEmpty,
+                       "crossing the city must produce something, even with a change")
+    }
+
+    func testAtLeastOneOptionUsesAChange() {
+        let options = planner.plan(from: home, to: farSide, limit: 6)
+        XCTAssertTrue(options.contains { $0.busLegs.count > 1 },
+                      "no single bus does this; a transfer has to be offered")
+    }
+
+    /// A chain must actually connect: you get off where you get on.
+    func testTheLegsOfATransferJoinUp() {
+        for o in planner.plan(from: home, to: farSide, limit: 6) where o.busLegs.count > 1 {
+            for (first, second) in zip(o.busLegs, o.busLegs.dropFirst()) {
+                let off = first.alightStop
+                let on = second.boardStop
+                XCTAssertNotNil(off); XCTAssertNotNil(on)
+                guard let off, let on else { continue }
+                // The same stop, or one close enough to walk between.
+                XCTAssertLessThan(Geo.metres(off.coordinate, on.coordinate), 500,
+                                  "changing from \(off.name) to \(on.name) is not a change, it is a journey")
+            }
+        }
+    }
+
+    /// Each leg of a chain must make progress. Two legs that each wander are
+    /// how a short hop became a tour of Istanbul.
+    /// Nothing is invented for a journey that cannot be made with one
+    /// change. Returning an empty list is the correct answer; the UI then
+    /// says which limit was hit.
+    func testACrossingThatNeedsMoreThanOneChangeReturnsNothing() {
+        XCTAssertTrue(planner.plan(from: home, to: acrossTheWater, limit: 6).isEmpty,
+                      "better to offer nothing than to invent a route that does not exist")
+    }
+
+    func testEveryLegOfAChainGetsCloser() {
+        for o in planner.plan(from: home, to: farSide, limit: 6) where o.busLegs.count > 1 {
+            guard let last = o.busLegs.last,
+                  let board = last.boardStop, let alight = last.alightStop else { continue }
+            XCTAssertLessThan(Geo.metres(alight.coordinate, farSide),
+                              Geo.metres(board.coordinate, farSide))
+        }
+    }
+}

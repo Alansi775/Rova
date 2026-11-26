@@ -164,7 +164,18 @@ struct JourneyMapView: View {
     /// schedule. This changes only what is drawn.
     private func busShape(_ leg: JourneyLeg) -> [CLLocationCoordinate2D] {
         guard let pid = leg.patternId, leg.shape.count >= 2 else { return leg.shape }
-        if let real = store.realShape(pid) { return real }
+        if let real = store.realShape(pid) {
+            // Only the stretch the rider is actually on. Drawing the whole
+            // güzergah put a 34 km line across the map for a four-stop hop,
+            // most of it road this journey never touches — and it buried the
+            // part that matters among the part that does not.
+            if let board = leg.boardStop, let alight = leg.alightStop {
+                let ride = Geo.sliceBetween(real, from: board.coordinate,
+                                            to: alight.coordinate)
+                if ride.count >= 2 { return ride }
+            }
+            return real
+        }
         // No published alignment for this pattern (eight of them are İETT
         // free-text notes stored in the code column). Fall back to the stop
         // sequence, which is honest about being a skeleton, rather than to a
@@ -189,6 +200,24 @@ struct JourneyMapView: View {
         drawnJourneyID = id
         drawProgress = 0
         withAnimation(.easeOut(duration: 0.85)) { drawProgress = 1 }
+    }
+
+    /// Where the followed bus is now, to the stop the rider boards at.
+    ///
+    /// Nil once the rider is aboard — at that point the bus is not coming to
+    /// them any more, and leaving it drawn would be describing a journey that
+    /// has already happened.
+    private func approachToBoardingStop() -> [CLLocationCoordinate2D]? {
+        guard engine.onBoardDoorNo == nil, engine.riderIsAboard == false,
+              let door = engine.trackedVehicleDoorNo ?? engine.tripDoorNo,
+              let leg = journey?.option.busLegs.first,
+              let pid = leg.patternId, let board = leg.boardStop,
+              let here = engine.motion.display(doorNo: door)?.coordinate,
+              let shape = store.realShape(pid) else { return nil }
+        let run = Geo.sliceBetween(shape, from: here, to: board.coordinate)
+        // An empty slice means the bus is already past the stop; nothing to
+        // draw, and nothing invented to fill the gap.
+        return run.count >= 2 ? run : nil
     }
 
     /// The ride split at the bus: behind it, and ahead of it.
@@ -273,6 +302,22 @@ struct JourneyMapView: View {
                             style: .init(lineWidth: 4, lineCap: .round, dash: [1, 9]))
             }
         }
+        // The stretch the chosen bus still has to cover before it reaches
+        // the stop you board at, drawn in the live colour.
+        //
+        // It answers the question the countdown cannot: not "four minutes",
+        // but *where those four minutes are* — which turn it is on, whether
+        // it has cleared the junction, how much road is left. A rider
+        // watching a bus approach wants the road, not the number.
+        if let approach = approachToBoardingStop() {
+            MapPolyline(coordinates: approach)
+                .stroke(RV.Color.live.opacity(0.30),
+                        style: .init(lineWidth: 11, lineCap: .round, lineJoin: .round))
+            MapPolyline(coordinates: approach)
+                .stroke(RV.Color.live,
+                        style: .init(lineWidth: 5, lineCap: .round, lineJoin: .round))
+        }
+
         // You, on the route. Not a bus marker somewhere near the road, but a
         // point on the line itself, between the stop you have left and the
         // one you are coming to.
