@@ -1,6 +1,6 @@
 name: ROVA
 options:
-  bundleIdPrefix: com.alansi
+  bundleIdPrefix: com.msgone
   deploymentTarget:
     iOS: "26.0"
   createIntermediateGroups: true
@@ -8,15 +8,28 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    # Mohammed Saleh (Personal Team) — deliberately NOT the employer's
-    # MSG ONE team, under which every App ID is visible to that team's
-    # admins. ROVA is a personal project and does not belong there.
+    # The employer's team — and, checked rather than assumed, this does not
+    # put ROVA in front of them.
     #
-    # The cost of a free personal team is that provisioning profiles last
-    # seven days: the app stops launching after that and has to be rebuilt
-    # and reinstalled from this Mac. A paid personal membership removes
-    # that, and nothing here would change but this one line.
-    DEVELOPMENT_TEAM: 4384CMSNNM
+    # The project was moved to the owner's personal team over exactly that
+    # worry, then moved back, because a free personal team's profiles last
+    # seven days and the app would stop launching mid-week. The company
+    # wildcard profile runs to September 2027.
+    #
+    # The worry turned out to be unfounded, and the earlier note here was
+    # wrong. Signing uses the team's wildcard profile, so Xcode never created
+    # an App ID for this bundle. The Identifiers list on developer.apple.com
+    # holds the two company apps and two XC placeholders — nothing named ROVA
+    # exists there at all.
+    #
+    # That holds only while the app needs no capability requiring an explicit
+    # App ID. Adding push notifications or App Groups would make Xcode
+    # register this bundle, and it would then be visible to every Admin on the
+    # team. Live Activities as built here update locally and need neither.
+    #
+    # To move to the personal team anyway, change this line to the personal
+    # team and bundleIdPrefix above to a personal namespace.
+    DEVELOPMENT_TEAM: 7UM534HHV5
     CODE_SIGN_STYLE: Automatic
     SWIFT_STRICT_CONCURRENCY: minimal
     ENABLE_USER_SCRIPT_SANDBOXING: NO
@@ -36,7 +49,7 @@ targets:
         embed: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.alansi.rova
+        PRODUCT_BUNDLE_IDENTIFIER: com.msgone.rova
         PRODUCT_NAME: ROVA
         INFOPLIST_FILE: ROVA/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -62,7 +75,7 @@ targets:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.alansi.rova.widget
+        PRODUCT_BUNDLE_IDENTIFIER: com.msgone.rova.widget
         PRODUCT_NAME: ROVAWidget
         SKIP_INSTALL: YES
         TARGETED_DEVICE_FAMILY: "1"
@@ -76,7 +89,7 @@ targets:
       - target: ROVA
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.alansi.rova.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.msgone.rova.tests
         GENERATE_INFOPLIST_FILE: YES
 schemes:
   ROVA:
